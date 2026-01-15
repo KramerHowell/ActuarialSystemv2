@@ -4,10 +4,9 @@
 
 use actuarial_system::{
     Policy, Assumptions,
-    projection::{ProjectionEngine, ProjectionConfig},
+    projection::{ProjectionEngine, ProjectionConfig, CreditingApproach, DEFAULT_INDEXED_ANNUAL_RATE},
 };
 use actuarial_system::policy::{QualStatus, Gender, CreditingStrategy, RollupType};
-use actuarial_system::projection::CreditingApproach;
 use std::fs::File;
 use std::io::Write;
 
@@ -47,11 +46,11 @@ fn main() {
     let assumptions = Assumptions::default_pricing();
 
     // Configure projection - full 30 years
-    // Using dynamic predictive lapse model and 3.78% indexed annual credit
+    // Using dynamic predictive lapse model and indexed annual credit
     let config = ProjectionConfig {
         projection_months: 360,
         crediting: CreditingApproach::IndexedAnnual {
-            annual_rate: 0.0378, // 3.78% annual indexed credit
+            annual_rate: DEFAULT_INDEXED_ANNUAL_RATE,
         },
         detailed_output: true,
         treasury_change: 0.0,

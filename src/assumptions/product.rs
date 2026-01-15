@@ -80,19 +80,50 @@ impl PayoutFactors {
         }
     }
 
-    /// Create default payout factors from product features
+    /// Create default payout factors from Product features sheet
+    /// Uses per-age factors from Excel (not banded)
     pub fn default() -> Self {
         let mut single_life = HashMap::new();
 
-        // Age bands and factors from Product features sheet
+        // Per-age payout factors from Excel Product features sheet
+        // Ages 50-55 use band rate
         single_life.insert((50, 55), 0.046);
-        single_life.insert((56, 60), 0.050);
-        single_life.insert((61, 65), 0.055);
-        single_life.insert((66, 70), 0.060);
-        single_life.insert((71, 75), 0.065);
-        single_life.insert((76, 80), 0.070);
-        single_life.insert((81, 85), 0.080);
-        single_life.insert((86, 120), 0.090);
+        // Ages 56+ use per-year rates
+        single_life.insert((56, 56), 0.0475);
+        single_life.insert((57, 57), 0.049);
+        single_life.insert((58, 58), 0.0505);
+        single_life.insert((59, 59), 0.052);
+        single_life.insert((60, 60), 0.0535);
+        single_life.insert((61, 61), 0.055);
+        single_life.insert((62, 62), 0.0565);
+        single_life.insert((63, 63), 0.058);
+        single_life.insert((64, 64), 0.0595);
+        single_life.insert((65, 65), 0.0605);
+        single_life.insert((66, 66), 0.061);
+        single_life.insert((67, 67), 0.062);
+        single_life.insert((68, 68), 0.0625);
+        single_life.insert((69, 69), 0.0635);
+        single_life.insert((70, 70), 0.0645);
+        single_life.insert((71, 71), 0.0655);
+        single_life.insert((72, 72), 0.0665);
+        single_life.insert((73, 73), 0.0675);
+        single_life.insert((74, 74), 0.069);
+        single_life.insert((75, 75), 0.0705);
+        single_life.insert((76, 76), 0.0725);
+        single_life.insert((77, 77), 0.0745);
+        single_life.insert((78, 78), 0.0765);
+        single_life.insert((79, 79), 0.0785);
+        single_life.insert((80, 80), 0.0795);
+        single_life.insert((81, 81), 0.0805);
+        single_life.insert((82, 82), 0.0815);
+        single_life.insert((83, 83), 0.0825);
+        single_life.insert((84, 84), 0.0835);
+        single_life.insert((85, 85), 0.0845);
+        single_life.insert((86, 86), 0.0855);
+        single_life.insert((87, 87), 0.0865);
+        single_life.insert((88, 88), 0.0875);
+        single_life.insert((89, 89), 0.0885);
+        single_life.insert((90, 120), 0.0895);  // 90+ use max rate
 
         Self {
             single_life,
@@ -224,17 +255,25 @@ pub struct BaseProductFeatures {
 
     /// Maximum issue age
     pub max_issue_age: u8,
+
+    /// Annual expense per policy (dollars)
+    pub annual_expense_per_policy: f64,
+
+    /// First year commission rate (as decimal, e.g., 0.05 = 5%)
+    pub first_year_commission_rate: f64,
 }
 
 impl Default for BaseProductFeatures {
     fn default() -> Self {
         Self {
             surrender_charges: SurrenderChargeSchedule::default_10_year(),
-            free_withdrawal_pct: 0.05, // 5% free withdrawal
+            free_withdrawal_pct: 0.05,        // 5% free withdrawal
             min_premium: 25_000.0,
             max_premium: 1_000_000.0,
             min_issue_age: 40,
             max_issue_age: 80,
+            annual_expense_per_policy: 10.0,  // $10/year per policy
+            first_year_commission_rate: 0.05, // 5% first year commission
         }
     }
 }
@@ -284,10 +323,13 @@ mod tests {
     fn test_payout_factors() {
         let pf = PayoutFactors::default();
 
-        assert_eq!(pf.get_single_life(52), 0.046);
-        assert_eq!(pf.get_single_life(65), 0.055);
-        assert_eq!(pf.get_single_life(77), 0.070);
-        assert_eq!(pf.get_single_life(90), 0.090);
+        // Per-age factors from Excel Product features sheet
+        assert_eq!(pf.get_single_life(52), 0.046);   // Band 50-55
+        assert_eq!(pf.get_single_life(61), 0.055);   // Age 61
+        assert_eq!(pf.get_single_life(64), 0.0595);  // Age 64
+        assert_eq!(pf.get_single_life(65), 0.0605);  // Age 65
+        assert_eq!(pf.get_single_life(77), 0.0745);  // Age 77
+        assert_eq!(pf.get_single_life(90), 0.0895);  // Age 90+
     }
 
     #[test]

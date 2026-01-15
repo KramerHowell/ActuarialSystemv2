@@ -1,7 +1,7 @@
 //! Core projection engine for monthly liability cashflow projections
 
 use crate::assumptions::Assumptions;
-use crate::policy::Policy;
+use crate::policy::{Policy, CreditingStrategy};
 use super::state::ProjectionState;
 use super::cashflows::{CashflowRow, ProjectionResult};
 
@@ -54,6 +54,16 @@ pub enum CreditingApproach {
         /// Annual credited rate for years 1-10
         annual_rate: f64,
     },
+    /// Policy-based crediting: uses each policy's crediting_strategy field
+    /// - Fixed policies: monthly compounding of fixed_annual_rate
+    /// - Indexed policies: annual credit at month 12 of indexed_annual_rate
+    /// Both use half rate after policy year 10
+    PolicyBased {
+        /// Annual rate for Fixed crediting strategy (e.g., 0.0275 for 2.75%)
+        fixed_annual_rate: f64,
+        /// Annual rate for Indexed crediting strategy (e.g., 0.0378 for 3.78%)
+        indexed_annual_rate: f64,
+    },
 }
 
 impl Default for ProjectionConfig {
@@ -91,6 +101,13 @@ impl ProjectionEngine {
         for _month in 1..=self.config.projection_months {
             // Advance state to next month
             state.advance_month(policy);
+
+            // Lock in payout rate when income first activates
+            if state.income_activated && state.locked_payout_rate.is_none() {
+                state.locked_payout_rate = Some(
+                    self.assumptions.product.glwb.payout_factors.get_single_life(state.attained_age)
+                );
+            }
 
             // Calculate and record cashflows
             let row = self.calculate_month(policy, &mut state);
@@ -165,7 +182,10 @@ impl ProjectionEngine {
             policy.gender,
         );
         row.baseline_mortality = baseline_annual;
-        row.mortality_improvement = 0.015; // 1.5% annual improvement
+        row.mortality_improvement = self.assumptions.mortality.improvement_rate(
+            state.attained_age,
+            policy.gender,
+        );
 
         // Final mortality with improvement applied
         row.final_mortality = self.assumptions.mortality.monthly_rate(
@@ -179,10 +199,12 @@ impl ProjectionEngine {
 
         // Free partial withdrawal percentage (incorporating RMD for qualified contracts)
         // Excel Column J: =IF(C11=1,0,IF($C$4="Q",MAX(base_free%,RMD_rate),base_free%))
+        let free_pct = self.assumptions.product.base.free_withdrawal_pct;
         row.fpw_pct = self.assumptions.pwd.get_fpw_pct(
             state.policy_year,
             state.attained_age,
             policy.qual_status,
+            free_pct,
         );
 
         // GLWB activation status
@@ -195,6 +217,7 @@ impl ProjectionEngine {
             state.attained_age,
             policy.qual_status,
             state.income_activated,
+            free_pct,
         );
 
         // Lapse components
@@ -242,7 +265,11 @@ impl ProjectionEngine {
         // Rider charge rate - annual, only applied when MOD(projection_month, 12) = 0
         // Excel: =IF(K12=1,1.5%,0.5%)*IF(MOD(B12,12)=0,1,0)
         row.rider_charge_rate = if state.projection_month % 12 == 0 {
-            if state.income_activated { 0.015 } else { 0.005 }
+            if state.income_activated {
+                self.assumptions.product.glwb.post_activation_charge
+            } else {
+                self.assumptions.product.glwb.pre_activation_charge
+            }
         } else {
             0.0
         };
@@ -251,26 +278,28 @@ impl ProjectionEngine {
         row.credited_rate = self.calculate_credited_rate(policy, state);
 
         // Systematic withdrawal (if income activated)
+        // Excel: V = IF(C>=$S$4, $T$4/12, 0) * P  where $T$4 is the locked payout rate
+        // Simple monthly calculation: payout_rate / 12 * current_BB
         row.systematic_withdrawal = if state.income_activated {
-            let annual_max = self.assumptions.product.glwb.max_annual_withdrawal(
-                state.bop_benefit_base,
-                state.attained_age,
-            );
-            (annual_max - state.ytd_systematic_wd).max(0.0) / (13.0 - state.month_in_policy_year as f64)
+            // Use locked payout rate (fixed at income activation) not current age-based rate
+            let payout_rate = state.locked_payout_rate.unwrap_or_else(|| {
+                self.assumptions.product.glwb.payout_factors.get_single_life(state.attained_age)
+            });
+            state.bop_benefit_base * payout_rate / 12.0
         } else {
             0.0
         };
 
-        // Rollup rate (monthly)
+        // Rollup rate (for display - actual rollup applied in update_benefit_base)
         row.rollup_rate = if state.policy_year <= policy.sc_period as u32 && !state.income_activated {
-            policy.bonus / 12.0 * 10.0 // Simple 10% annual rollup
+            self.assumptions.product.glwb.rollup_rate / 12.0
         } else {
             0.0
         };
     }
 
     /// Calculate credited rate based on configuration
-    fn calculate_credited_rate(&self, _policy: &Policy, state: &ProjectionState) -> f64 {
+    fn calculate_credited_rate(&self, policy: &Policy, state: &ProjectionState) -> f64 {
         match &self.config.crediting {
             CreditingApproach::OptionBudget { budget_rate, equity_kicker } => {
                 (*budget_rate + *equity_kicker) / 12.0
@@ -292,6 +321,30 @@ impl ProjectionEngine {
                     *annual_rate * rate_multiplier
                 } else {
                     0.0
+                }
+            }
+            CreditingApproach::PolicyBased { fixed_annual_rate, indexed_annual_rate } => {
+                // Use the policy's crediting strategy to determine which rate/timing to use
+                // Both use half rate after policy year 10
+                let rate_multiplier = if state.policy_year <= 10 { 1.0 } else { 0.5 };
+
+                match policy.crediting_strategy {
+                    CreditingStrategy::Fixed => {
+                        // Fixed: monthly compounding of annual rate
+                        // Excel: (1 + rate * mult)^(1/12) - 1
+                        let annual = fixed_annual_rate * rate_multiplier;
+                        (1.0 + annual).powf(1.0 / 12.0) - 1.0
+                    }
+                    CreditingStrategy::Indexed => {
+                        // Indexed: annual credit at month 1 of following year
+                        if state.month_in_policy_year == 1 && state.policy_year > 1 {
+                            let crediting_for_year = state.policy_year - 1;
+                            let mult = if crediting_for_year <= 10 { 1.0 } else { 0.5 };
+                            *indexed_annual_rate * mult
+                        } else {
+                            0.0
+                        }
+                    }
                 }
             }
         }
@@ -404,12 +457,12 @@ impl ProjectionEngine {
         // Note: For single-policy projection, we track per-policy EOP AV
         row.eop_av = (bop_av + interest_credits - (mort_dec + lapse_dec + pwd_dec + rider_dec + surr_chg_dec)).max(0.0);
 
-        // Expenses (simplified)
-        row.expenses = lives * 10.0 / 12.0; // $10/policy/year
+        // Expenses - annual expense spread monthly
+        row.expenses = lives * self.assumptions.product.base.annual_expense_per_policy / 12.0;
 
         // Commission (only in first year)
         if state.policy_year == 1 && state.month_in_policy_year == 1 {
-            row.commission = policy.initial_premium * 0.05; // 5% first year commission
+            row.commission = policy.initial_premium * self.assumptions.product.base.first_year_commission_rate;
         }
 
         // Total net cashflow
@@ -444,10 +497,13 @@ impl ProjectionEngine {
             // Rollup at month 12 during SC period when GLWB not activated
             // 10% simple interest on premium, applied multiplicatively to persisted BB
             // Excel: W = (1+Bonus+0.1*MIN(10,PY))/(1+Bonus+0.1*MIN(10,PY-1))-1
+            // Note: Use benefit base bonus (30%) from GLWB features, NOT policy.bonus (premium bonus)
+            let bb_bonus = self.assumptions.product.glwb.bonus_rate;
+            let rollup_rate = self.assumptions.product.glwb.rollup_rate;
             let py = (state.policy_year as f64).min(10.0);
             let py_prev = ((state.policy_year - 1) as f64).min(10.0);
-            let rollup_factor = (1.0 + policy.bonus + 0.10 * py)
-                              / (1.0 + policy.bonus + 0.10 * py_prev);
+            let rollup_factor = (1.0 + bb_bonus + rollup_rate * py)
+                              / (1.0 + bb_bonus + rollup_rate * py_prev);
             state.bop_benefit_base = state.bop_benefit_base * rollup_factor;
         }
     }

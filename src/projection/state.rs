@@ -41,6 +41,9 @@ pub struct ProjectionState {
     /// Whether GLWB income has been activated
     pub income_activated: bool,
 
+    /// Locked payout rate at income activation (fixed for life of policy)
+    pub locked_payout_rate: Option<f64>,
+
     /// Cumulative systematic withdrawals taken this policy year
     pub ytd_systematic_wd: f64,
 
@@ -73,6 +76,7 @@ impl ProjectionState {
             bb_persistency: 1.0,
             lives_persistency: 1.0,
             income_activated: policy.income_activated,
+            locked_payout_rate: None, // Set when income activates
             ytd_systematic_wd: 0.0,
             ytd_non_systematic_wd: 0.0,
             initial_benefit_base: policy.starting_benefit_base(),
