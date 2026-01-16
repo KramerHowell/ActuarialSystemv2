@@ -5,7 +5,7 @@
 use actuarial_system::{
     Assumptions,
     projection::{
-        ProjectionEngine, ProjectionConfig, CashflowRow, CreditingApproach,
+        ProjectionEngine, ProjectionConfig, CashflowRow, CreditingApproach, HedgeParams,
         DEFAULT_FIXED_ANNUAL_RATE, DEFAULT_INDEXED_ANNUAL_RATE,
     },
 };
@@ -29,6 +29,15 @@ struct AggregatedRow {
     total_surrender_charges: f64,
     total_interest: f64,
     total_eop_av: f64,
+    // New fields
+    total_expenses: f64,
+    total_agent_commission: f64,
+    total_imo_override: f64,
+    total_wholesaler_override: f64,
+    total_bonus_comp: f64,
+    total_chargebacks: f64,
+    total_hedge_gains: f64,
+    total_net_cashflow: f64,
 }
 
 fn main() {
@@ -53,10 +62,37 @@ fn main() {
         detailed_output: false, // Don't need detailed lapse components
         treasury_change: 0.0,
         fixed_lapse_rate: None,
+        hedge_params: Some(HedgeParams::default()),
     };
 
     println!("Running projections...");
     let proj_start = Instant::now();
+
+    // Debug: trace policy 2 (indexed) for first 14 months
+    if let Some(policy) = policies.iter().find(|p| p.policy_id == 2) {
+        println!("\n=== Debug: Policy 2 (Indexed) ===");
+        println!("Issue age: {}, Premium: {:.2}, Crediting: {:?}",
+                 policy.issue_age, policy.initial_premium, policy.crediting_strategy);
+        let engine = ProjectionEngine::new(assumptions.clone(), config.clone());
+        let result = engine.project_policy(policy);
+        println!("Month | BOP_AV | Mort | Lapse | PWD | RiderRate | AV_Persist | AV_Lost | HedgeGains");
+        for row in result.cashflows.iter().take(14) {
+            // Recalculate components for debug
+            let rider_rate = if row.bop_av > 0.0 {
+                row.rider_charge_rate * row.bop_benefit_base / row.bop_av
+            } else { 0.0 };
+            let av_persist = (1.0 - row.final_mortality)
+                * (1.0 - row.final_lapse_rate)
+                * (1.0 - row.non_systematic_pwd_rate)
+                * (1.0 - rider_rate).max(0.0);
+            let av_lost = row.bop_av * (1.0 - av_persist);
+            println!("{:5} | {:10.4} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6} | {:.6}",
+                     row.projection_month, row.bop_av, row.final_mortality,
+                     row.final_lapse_rate, row.non_systematic_pwd_rate,
+                     rider_rate, av_persist, av_lost, row.hedge_gains);
+        }
+        println!("=================================\n");
+    }
 
     // Run projections in parallel
     let results: Vec<Vec<CashflowRow>> = policies
@@ -91,6 +127,15 @@ fn main() {
                 agg.total_surrender_charges += row.surrender_charges_dec;
                 agg.total_interest += row.interest_credits_dec;
                 agg.total_eop_av += row.eop_av;
+                // New fields
+                agg.total_expenses += row.expenses;
+                agg.total_agent_commission += row.agent_commission;
+                agg.total_imo_override += row.imo_override;
+                agg.total_wholesaler_override += row.wholesaler_override;
+                agg.total_bonus_comp += row.bonus_comp;
+                agg.total_chargebacks += row.chargebacks;
+                agg.total_hedge_gains += row.hedge_gains;
+                agg.total_net_cashflow += row.total_net_cashflow;
             }
         }
     }
@@ -99,12 +144,12 @@ fn main() {
     let output_path = "block_projection_output.csv";
     let mut file = File::create(output_path).expect("Failed to create output file");
 
-    writeln!(file, "Month,BOP_AV,BOP_BB,Lives,Mortality,Lapse,PWD,RiderCharges,SurrCharges,Interest,EOP_AV").unwrap();
+    writeln!(file, "Month,BOP_AV,BOP_BB,Lives,Mortality,Lapse,PWD,RiderCharges,SurrCharges,Interest,EOP_AV,Expenses,AgentComm,IMOOverride,WholesalerOverride,BonusComp,Chargebacks,HedgeGains,NetCashflow").unwrap();
 
     for row in &aggregated {
         writeln!(
             file,
-            "{},{:.2},{:.2},{:.8},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}",
+            "{},{:.2},{:.2},{:.8},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2}",
             row.month,
             row.total_bop_av,
             row.total_bop_bb,
@@ -116,6 +161,14 @@ fn main() {
             row.total_surrender_charges,
             row.total_interest,
             row.total_eop_av,
+            row.total_expenses,
+            row.total_agent_commission,
+            row.total_imo_override,
+            row.total_wholesaler_override,
+            row.total_bonus_comp,
+            row.total_chargebacks,
+            row.total_hedge_gains,
+            row.total_net_cashflow,
         ).unwrap();
     }
 

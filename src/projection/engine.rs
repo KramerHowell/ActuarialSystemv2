@@ -5,6 +5,29 @@ use crate::policy::{Policy, CreditingStrategy};
 use super::state::ProjectionState;
 use super::cashflows::{CashflowRow, ProjectionResult};
 
+/// Hedge/derivative parameters for indexed products
+#[derive(Debug, Clone)]
+pub struct HedgeParams {
+    /// Option budget rate (annual) - what we pay for the derivative
+    pub option_budget: f64,
+
+    /// Derivative appreciation rate (annual) - e.g., 0.20 = 20%
+    pub appreciation_rate: f64,
+
+    /// Financing fee rate (annual) - e.g., 0.05 = 5%
+    pub financing_fee: f64,
+}
+
+impl Default for HedgeParams {
+    fn default() -> Self {
+        Self {
+            option_budget: 0.0315,      // 3.15% - what we pay for derivatives
+            appreciation_rate: 0.20,    // 20% equity kicker
+            financing_fee: 0.05,        // 5% premium financing
+        }
+    }
+}
+
 /// Configuration for a projection run
 #[derive(Debug, Clone)]
 pub struct ProjectionConfig {
@@ -23,6 +46,10 @@ pub struct ProjectionConfig {
     /// Override lapse with fixed annual rate (for testing)
     /// If Some, uses this rate with even 1/12 monthly skew
     pub fixed_lapse_rate: Option<f64>,
+
+    /// Hedge/derivative parameters for indexed products
+    /// Set to None to disable hedge gain calculations
+    pub hedge_params: Option<HedgeParams>,
 }
 
 /// Approach for crediting interest to account value
@@ -77,6 +104,7 @@ impl Default for ProjectionConfig {
             detailed_output: true,
             treasury_change: 0.0,
             fixed_lapse_rate: None,
+            hedge_params: Some(HedgeParams::default()),
         }
     }
 }
@@ -150,6 +178,13 @@ impl ProjectionEngine {
 
         // Calculate cashflows
         self.calculate_cashflows(policy, state, &mut row);
+
+        // Store first month's total commission for chargeback calculations
+        if state.projection_month == 1 {
+            state.first_month_total_commission = row.agent_commission
+                + row.imo_override
+                + row.wholesaler_override;
+        }
 
         // Accumulate YTD systematic withdrawal for correct monthly distribution
         state.ytd_systematic_wd += row.systematic_withdrawal;
@@ -457,13 +492,54 @@ impl ProjectionEngine {
         // Note: For single-policy projection, we track per-policy EOP AV
         row.eop_av = (bop_av + interest_credits - (mort_dec + lapse_dec + pwd_dec + rider_dec + surr_chg_dec)).max(0.0);
 
-        // Expenses - annual expense spread monthly
-        row.expenses = lives * self.assumptions.product.base.annual_expense_per_policy / 12.0;
+        // Expenses: 0.25%/12 of EOP AV (per-policy basis)
+        // Per COLUMN_MAPPING row AJ: =0.0025/12*AI11
+        row.expenses = row.eop_av * self.assumptions.product.base.expense_rate_of_av / 12.0;
 
-        // Commission (only in first year)
-        if state.policy_year == 1 && state.month_in_policy_year == 1 {
-            row.commission = policy.initial_premium * self.assumptions.product.base.first_year_commission_rate;
+        // Commissions (month 1 only)
+        if state.projection_month == 1 {
+            let comm = &self.assumptions.product.commissions;
+            let (agent, imo_net, imo_conv, ws_net, ws_conv) =
+                comm.calculate_commissions(policy.initial_premium, policy.issue_age);
+
+            row.agent_commission = agent;
+            row.imo_override = imo_net;
+            row.imo_conversion_owed = imo_conv;
+            row.wholesaler_override = ws_net;
+            row.wholesaler_conversion_owed = ws_conv;
         }
+
+        // Bonus compensation at month 13
+        // Per COLUMN_MAPPING row AM: =IF(B11=13,O11*bonus_rate,0)
+        if state.projection_month == 13 {
+            let comm = &self.assumptions.product.commissions;
+            row.bonus_comp = state.bop_av * comm.bonus_rate(policy.issue_age);
+        }
+
+        // Chargebacks: recover commission from early terminations
+        // Per COLUMN_MAPPING row AL: =AA11*(1-Z11)/$G$4*$AK$11*IF(C11>1,0,IF(B11>6,0.5,1))
+        let comm = &self.assumptions.product.commissions;
+        let chargeback_factor = comm.chargeback_factor(state.projection_month, state.policy_year);
+
+        if chargeback_factor > 0.0 && state.initial_lives > 0.0 {
+            // Lives lost this month (as proportion of initial)
+            let lives_persistency_this_month = row.lives_persistency / state.lives_persistency;
+            let lives_lost_rate = 1.0 - lives_persistency_this_month;
+
+            // For month 1, use the commission we just calculated; otherwise use stored value
+            let first_month_commission = if state.projection_month == 1 {
+                row.agent_commission + row.imo_override + row.wholesaler_override
+            } else {
+                state.first_month_total_commission
+            };
+
+            // Chargeback = lives_BOP * lives_lost_rate / initial_lives * first_month_commission * factor
+            row.chargebacks = state.lives * lives_lost_rate / state.initial_lives
+                * first_month_commission * chargeback_factor;
+        }
+
+        // Hedge gains (indexed products only)
+        self.calculate_hedge_gains(policy, state, row);
 
         // Total net cashflow
         row.total_net_cashflow = row.premium
@@ -473,7 +549,67 @@ impl ProjectionEngine {
             + row.rider_charges_cf
             + row.surrender_charges_cf
             - row.expenses
-            - row.commission;
+            - row.agent_commission
+            - row.imo_override
+            - row.wholesaler_override
+            - row.bonus_comp
+            + row.chargebacks
+            + row.hedge_gains;
+    }
+
+    /// Calculate hedge gains for indexed products
+    /// Policyholders who don't persist don't receive index credit, so we recapture the derivative value
+    fn calculate_hedge_gains(&self, policy: &Policy, state: &ProjectionState, row: &mut CashflowRow) {
+        // Only for Indexed products
+        if policy.crediting_strategy == CreditingStrategy::Fixed {
+            row.net_index_credit_reimbursement = 0.0;
+            row.hedge_gains = 0.0;
+            return;
+        }
+
+        let Some(params) = &self.config.hedge_params else {
+            row.net_index_credit_reimbursement = 0.0;
+            row.hedge_gains = 0.0;
+            return;
+        };
+
+        // Rate multiplier: full rate years 1-10, half rate years 11+
+        let rate_mult = if state.policy_year <= 10 { 1.0 } else { 0.5 };
+
+        // Net appreciation factor: (1 + equity_kicker - financing_fee) = 1.15
+        // "Bad math" per user: (1 + 20% - 5%) for derivative appreciation
+        let net_appreciation = 1.0 + params.appreciation_rate - params.financing_fee;
+
+        // Net index credit reimbursement: when we credit policyholders, we recapture
+        // the difference between what we credited and what the option cost us
+        // R formula: BOPAV * pmax(0, CreditedRate - lag(BaseOptionBudget) * 1.05)
+        // This naturally fires only when CreditedRate > 0 (i.e., at annual credit time)
+        let option_cost = params.option_budget * (1.0 + params.financing_fee);
+        row.net_index_credit_reimbursement = (state.bop_av * (row.credited_rate - option_cost)).max(0.0);
+
+        // Hedge gains from non-persisting policyholders
+        // Per COLUMN_MAPPING row AP: =IF($K$4="Fixed",0,O11*(1-X11)*$X$4*IF(C11>10, 0.5, 1)*(1+$Y$4-$AA$4)^(D11/12)+AO11)
+        // Excel X = (1-mortality)*(1-lapse)*(1-pwd)*(1-rider_rate) - full monthly AV persistency
+        // They don't get the index credit, so we pocket the appreciated derivative
+
+        // Compute rider rate same as in calculate_cashflows
+        let rider_rate = if state.bop_av > 0.0 {
+            row.rider_charge_rate * state.bop_benefit_base / state.bop_av
+        } else {
+            0.0
+        };
+
+        // Full monthly AV persistency per Excel column X formula
+        // R: (1-mort)*(1-lapse)*(1-pwd)*pmax(1-rider_rate, 0)
+        let monthly_av_persistency = (1.0 - row.final_mortality)
+            * (1.0 - row.final_lapse_rate)
+            * (1.0 - row.non_systematic_pwd_rate)
+            * (1.0 - rider_rate).max(0.0);
+
+        let av_lost = state.bop_av * (1.0 - monthly_av_persistency);
+        row.hedge_gains = av_lost * params.option_budget * rate_mult
+            * net_appreciation.powf(state.month_in_policy_year as f64 / 12.0)
+            + row.net_index_credit_reimbursement;
     }
 
     /// Update benefit base for next month

@@ -98,7 +98,7 @@ impl Default for ScenarioRunner {
 mod tests {
     use super::*;
     use crate::policy::{QualStatus, Gender, CreditingStrategy, RollupType};
-    use crate::projection::CreditingApproach;
+    use crate::projection::{CreditingApproach, HedgeParams};
 
     fn test_policy() -> Policy {
         Policy::new(
@@ -131,6 +131,7 @@ mod tests {
                 detailed_output: false,
                 treasury_change: 0.0,
                 fixed_lapse_rate: Some(0.05),
+                hedge_params: Some(HedgeParams::default()),
             })
             .collect();
 

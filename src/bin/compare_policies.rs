@@ -5,7 +5,7 @@
 use actuarial_system::{
     Assumptions,
     projection::{
-        ProjectionEngine, ProjectionConfig, CashflowRow, CreditingApproach,
+        ProjectionEngine, ProjectionConfig, CashflowRow, CreditingApproach, HedgeParams,
         DEFAULT_FIXED_ANNUAL_RATE, DEFAULT_INDEXED_ANNUAL_RATE,
     },
 };
@@ -29,6 +29,7 @@ fn main() {
         detailed_output: true,
         treasury_change: 0.0,
         fixed_lapse_rate: None,
+        hedge_params: Some(HedgeParams::default()),
     };
 
     for policy_id in policy_ids {
@@ -69,11 +70,11 @@ fn write_rust_output(path: &str, cashflows: &[CashflowRow]) {
         Base component,Dynamic component,Final lapse rate,Rider charge,Credited rate,\
         Systematic withdrawal,Rollup rate,AV persistency,BB persistency,Lives persistency,\
         Lives,Pre-decrement AV,Mortality,Lapse,PWD,Rider charges,Surrender charges,\
-        Interest credits,EOP AV,Expenses,Commission,Chargebacks,Bonus comp,Total net cashflow,\
-        Net index credit reimbursement,Hedge gains").unwrap();
+        Interest credits,EOP AV,Expenses,Agent Commission,IMO Override,Wholesaler Override,\
+        Chargebacks,Bonus comp,Total net cashflow,Net index credit reimbursement,Hedge gains").unwrap();
 
     for row in cashflows {
-        writeln!(file, "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        writeln!(file, "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             row.projection_month,
             row.policy_year,
             row.month_in_policy_year,
@@ -109,7 +110,9 @@ fn write_rust_output(path: &str, cashflows: &[CashflowRow]) {
             row.interest_credits_dec,
             row.eop_av,
             row.expenses,
-            row.commission,
+            row.agent_commission,
+            row.imo_override,
+            row.wholesaler_override,
             row.chargebacks,
             row.bonus_comp,
             row.total_net_cashflow,

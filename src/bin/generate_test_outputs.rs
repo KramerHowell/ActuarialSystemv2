@@ -5,7 +5,7 @@
 
 use actuarial_system::{
     Policy, Assumptions,
-    projection::{ProjectionEngine, ProjectionConfig, CreditingApproach, DEFAULT_INDEXED_ANNUAL_RATE},
+    projection::{ProjectionEngine, ProjectionConfig, CreditingApproach, HedgeParams, DEFAULT_INDEXED_ANNUAL_RATE},
 };
 use actuarial_system::policy::{QualStatus, Gender, CreditingStrategy, RollupType};
 use std::fs::File;
@@ -111,6 +111,7 @@ fn main() {
         detailed_output: true,
         treasury_change: 0.0,
         fixed_lapse_rate: None, // Use predictive lapse model
+        hedge_params: Some(HedgeParams::default()),
     };
 
     for tp in &test_policies {

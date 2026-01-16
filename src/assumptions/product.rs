@@ -256,10 +256,14 @@ pub struct BaseProductFeatures {
     /// Maximum issue age
     pub max_issue_age: u8,
 
-    /// Annual expense per policy (dollars)
+    /// Annual expense per policy (dollars) - set to 0 if using expense_rate_of_av
     pub annual_expense_per_policy: f64,
 
-    /// First year commission rate (as decimal, e.g., 0.05 = 5%)
+    /// Annual expense rate as percentage of EOP AV (e.g., 0.0025 = 0.25%)
+    /// Applied monthly as rate/12 * EOP_AV
+    pub expense_rate_of_av: f64,
+
+    /// First year commission rate (as decimal, e.g., 0.05 = 5%) - DEPRECATED, use CommissionAssumptions
     pub first_year_commission_rate: f64,
 }
 
@@ -267,14 +271,124 @@ impl Default for BaseProductFeatures {
     fn default() -> Self {
         Self {
             surrender_charges: SurrenderChargeSchedule::default_10_year(),
-            free_withdrawal_pct: 0.05,        // 5% free withdrawal
+            free_withdrawal_pct: 0.05,           // 5% free withdrawal
             min_premium: 25_000.0,
             max_premium: 1_000_000.0,
             min_issue_age: 40,
             max_issue_age: 80,
-            annual_expense_per_policy: 10.0,  // $10/year per policy
-            first_year_commission_rate: 0.05, // 5% first year commission
+            annual_expense_per_policy: 0.0,      // $0 - using expense_rate_of_av instead
+            expense_rate_of_av: 0.0025,          // 0.25% of EOP AV annually
+            first_year_commission_rate: 0.05,   // DEPRECATED - 5% first year commission
         }
+    }
+}
+
+/// Commission assumptions with age-based rates and chargeback schedule
+#[derive(Debug, Clone)]
+pub struct CommissionAssumptions {
+    /// Age threshold: at or below uses "young" rates, above uses "old" rates
+    pub age_threshold: u8,
+
+    /// Agent commission rate for ages <= threshold (e.g., 0.07 = 7%)
+    pub agent_rate_young: f64,
+    /// Agent commission rate for ages > threshold (e.g., 0.045 = 4.5%)
+    pub agent_rate_old: f64,
+
+    /// IMO gross override rate before conversion for ages <= threshold (e.g., 0.036 = 3.6%)
+    pub imo_gross_rate_young: f64,
+    /// IMO gross override rate before conversion for ages > threshold (e.g., 0.014 = 1.4%)
+    pub imo_gross_rate_old: f64,
+    /// Wholesaler gross override rate before conversion for ages <= threshold (e.g., 0.006 = 0.6%)
+    pub wholesaler_gross_rate_young: f64,
+    /// Wholesaler gross override rate before conversion for ages > threshold (e.g., 0.003 = 0.3%)
+    pub wholesaler_gross_rate_old: f64,
+
+    /// IMO equity conversion rate (e.g., 0.25 = 25%)
+    pub imo_conversion_rate: f64,
+    /// Wholesaler conversion rate (e.g., 0.40 = 40%)
+    pub wholesaler_conversion_rate: f64,
+
+    /// Month 13 bonus rate on BOP AV for young ages (e.g., 0.005 = 0.5%)
+    pub bonus_rate_young: f64,
+
+    /// Months with 100% chargeback (e.g., 6 = months 1-6)
+    pub chargeback_months_full: u32,
+    /// Months with 50% chargeback (e.g., 12 = months 7-12)
+    pub chargeback_months_half: u32,
+}
+
+impl Default for CommissionAssumptions {
+    fn default() -> Self {
+        Self {
+            age_threshold: 75,
+            agent_rate_young: 0.07,              // 7%
+            agent_rate_old: 0.045,               // 4.5%
+            imo_gross_rate_young: 0.036,         // 3.6%
+            imo_gross_rate_old: 0.017 * 6.0 / 7.0,   // ~1.46%
+            wholesaler_gross_rate_young: 0.006,  // 0.6%
+            wholesaler_gross_rate_old: 0.017 / 7.0,    // ~0.24%
+            imo_conversion_rate: 0.25,           // 25%
+            wholesaler_conversion_rate: 0.40,    // 40%
+            bonus_rate_young: 0.005,             // 0.5%
+            chargeback_months_full: 6,
+            chargeback_months_half: 12,
+        }
+    }
+}
+
+impl CommissionAssumptions {
+    /// Get agent commission rate based on issue age
+    pub fn agent_rate(&self, issue_age: u8) -> f64 {
+        if issue_age <= self.age_threshold {
+            self.agent_rate_young
+        } else {
+            self.agent_rate_old
+        }
+    }
+
+    /// Get bonus rate based on issue age
+    /// Older ages: bonus_rate_young * (agent_rate_old / agent_rate_young)
+    pub fn bonus_rate(&self, issue_age: u8) -> f64 {
+        if issue_age <= self.age_threshold {
+            self.bonus_rate_young
+        } else {
+            self.bonus_rate_young * self.agent_rate_old / self.agent_rate_young
+        }
+    }
+
+    /// Get chargeback factor based on projection month
+    /// 100% for months 1-6, 50% for months 7-12, 0% after
+    pub fn chargeback_factor(&self, projection_month: u32, policy_year: u32) -> f64 {
+        if policy_year > 1 {
+            0.0
+        } else if projection_month <= self.chargeback_months_full {
+            1.0
+        } else if projection_month <= self.chargeback_months_half {
+            0.5
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate all commission components for a given premium and issue age
+    /// Returns (agent, imo_net, imo_conversion, wholesaler_net, wholesaler_conversion)
+    pub fn calculate_commissions(&self, premium: f64, issue_age: u8) -> (f64, f64, f64, f64, f64) {
+        let agent = premium * self.agent_rate(issue_age);
+
+        let (imo_gross, wholesaler_gross) = if issue_age <= self.age_threshold {
+            // Ages 0-75: use young rates
+            (premium * self.imo_gross_rate_young, premium * self.wholesaler_gross_rate_young)
+        } else {
+            // Ages 76+: use old rates
+            (premium * self.imo_gross_rate_old, premium * self.wholesaler_gross_rate_old)
+        };
+
+        let imo_net = imo_gross * (1.0 - self.imo_conversion_rate);
+        let imo_conversion = imo_gross * self.imo_conversion_rate;
+        let wholesaler_net = wholesaler_gross * (1.0 - self.wholesaler_conversion_rate);
+        let wholesaler_conversion = wholesaler_gross * self.wholesaler_conversion_rate;
+
+        (agent, imo_net, imo_conversion, wholesaler_net, wholesaler_conversion)
     }
 }
 
@@ -283,6 +397,7 @@ impl Default for BaseProductFeatures {
 pub struct ProductFeatures {
     pub base: BaseProductFeatures,
     pub glwb: GlwbFeatures,
+    pub commissions: CommissionAssumptions,
 }
 
 impl Default for ProductFeatures {
@@ -290,6 +405,7 @@ impl Default for ProductFeatures {
         Self {
             base: BaseProductFeatures::default(),
             glwb: GlwbFeatures::default(),
+            commissions: CommissionAssumptions::default(),
         }
     }
 }

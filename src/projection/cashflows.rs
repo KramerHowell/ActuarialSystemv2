@@ -61,9 +61,15 @@ pub struct CashflowRow {
 
     // Expenses
     pub expenses: f64,
-    pub commission: f64,
-    pub chargebacks: f64,
-    pub bonus_comp: f64,
+
+    // Commission components (month 1 only for initial commissions)
+    pub agent_commission: f64,           // 7% (ages 0-75) or 4.5% (76+) of premium
+    pub imo_override: f64,               // Net of conversion
+    pub imo_conversion_owed: f64,        // 25% of gross IMO (tracking only)
+    pub wholesaler_override: f64,        // Net of conversion
+    pub wholesaler_conversion_owed: f64, // 40% of gross wholesaler (tracking only)
+    pub bonus_comp: f64,                 // Month 13 bonus on BOP AV
+    pub chargebacks: f64,                // Clawback of commissions for early terminations
 
     // Summary
     pub total_net_cashflow: f64,
@@ -116,9 +122,13 @@ impl CashflowRow {
             interest_credits_cf: 0.0,
             eop_av: 0.0,
             expenses: 0.0,
-            commission: 0.0,
-            chargebacks: 0.0,
+            agent_commission: 0.0,
+            imo_override: 0.0,
+            imo_conversion_owed: 0.0,
+            wholesaler_override: 0.0,
+            wholesaler_conversion_owed: 0.0,
             bonus_comp: 0.0,
+            chargebacks: 0.0,
             total_net_cashflow: 0.0,
             net_index_credit_reimbursement: 0.0,
             hedge_gains: 0.0,

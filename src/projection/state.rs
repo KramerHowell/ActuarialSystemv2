@@ -58,6 +58,12 @@ pub struct ProjectionState {
 
     /// Prior period's BOP BB (for lagged ITM calculation - matches Excel's behavior)
     pub prior_bop_bb: f64,
+
+    /// First month's total commission (agent + override) for chargeback calculations
+    pub first_month_total_commission: f64,
+
+    /// Initial number of lives at projection start (for chargeback normalization)
+    pub initial_lives: f64,
 }
 
 impl ProjectionState {
@@ -83,6 +89,9 @@ impl ProjectionState {
             // Prior BOP values for lagged ITM calc (initial values for first month)
             prior_bop_av: policy.starting_av(),
             prior_bop_bb: policy.starting_benefit_base(),
+            // Commission tracking for chargebacks
+            first_month_total_commission: 0.0, // Set in engine after calculating month 1
+            initial_lives: policy.initial_pols,
         }
     }
 
