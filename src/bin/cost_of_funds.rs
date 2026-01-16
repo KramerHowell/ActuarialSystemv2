@@ -21,10 +21,19 @@ use std::time::Instant;
 #[derive(Serialize)]
 struct ProjectionResponse {
     cost_of_funds_pct: Option<f64>,
+    ceding_commission: Option<CedingCommission>,
     policy_count: usize,
     projection_months: u32,
     summary: ProjectionSummary,
     execution_time_ms: u64,
+}
+
+#[derive(Serialize)]
+struct CedingCommission {
+    npv: f64,
+    bbb_rate_pct: f64,
+    spread_pct: f64,
+    total_rate_pct: f64,
 }
 
 #[derive(Serialize)]
@@ -37,6 +46,24 @@ struct ProjectionSummary {
     month_1_cashflow: f64,
     final_lives: f64,
     final_av: f64,
+}
+
+/// Calculate ceding commission as NPV of cashflows at BBB rate + spread
+/// Formula: NPV((1+annual_rate)^(1/12)-1, cashflows) * (1+annual_rate)^(1/12)
+/// The multiplication adjusts Excel's end-of-period NPV to beginning-of-period
+fn calculate_ceding_commission(cashflows: &[f64], bbb_rate: f64, spread: f64) -> f64 {
+    let annual_rate = bbb_rate + spread;
+    let monthly_factor = (1.0 + annual_rate).powf(1.0 / 12.0);
+    let monthly_rate = monthly_factor - 1.0;
+
+    // Excel NPV: sum of cashflow[i] / (1 + rate)^(i+1)
+    let mut npv = 0.0;
+    for (i, cf) in cashflows.iter().enumerate() {
+        npv += cf / (1.0 + monthly_rate).powi((i + 1) as i32);
+    }
+
+    // Multiply by monthly factor to adjust to beginning of period
+    npv * monthly_factor
 }
 
 fn main() {
@@ -62,6 +89,16 @@ fn main() {
         .unwrap_or(DEFAULT_INDEXED_ANNUAL_RATE);
 
     let treasury_change: f64 = env::var("TREASURY_CHANGE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+
+    // BBB rate and spread for ceding commission calculation (as decimals, e.g., 0.05 for 5%)
+    let bbb_rate: Option<f64> = env::var("BBB_RATE")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
+    let spread: f64 = env::var("SPREAD")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0);
@@ -151,12 +188,24 @@ fn main() {
     let cost_of_funds = calculate_cost_of_funds(&aggregated_cashflows);
     let cost_of_funds_pct = cost_of_funds.map(|r| r * 100.0);
 
+    // Calculate ceding commission if BBB rate is provided
+    let ceding_commission = bbb_rate.map(|bbb| {
+        let npv = calculate_ceding_commission(&aggregated_cashflows, bbb, spread);
+        CedingCommission {
+            npv,
+            bbb_rate_pct: bbb * 100.0,
+            spread_pct: spread * 100.0,
+            total_rate_pct: (bbb + spread) * 100.0,
+        }
+    });
+
     let execution_time_ms = start.elapsed().as_millis() as u64;
 
     if json_output {
         // Output JSON for API consumption
         let response = ProjectionResponse {
             cost_of_funds_pct,
+            ceding_commission,
             policy_count,
             projection_months,
             summary: ProjectionSummary {
@@ -205,6 +254,16 @@ fn main() {
             None => {
                 println!("\n  Could not calculate IRR (no solution found)");
             }
+        }
+
+        if let Some(cc) = &ceding_commission {
+            println!("\n========================================");
+            println!("  CEDING COMMISSION");
+            println!("  BBB Rate:    {:.2}%", cc.bbb_rate_pct);
+            println!("  Spread:      {:.2}%", cc.spread_pct);
+            println!("  Total Rate:  {:.2}%", cc.total_rate_pct);
+            println!("  NPV:         ${:.2}", cc.npv);
+            println!("========================================");
         }
 
         println!("\nTotal time: {:?}", start.elapsed());

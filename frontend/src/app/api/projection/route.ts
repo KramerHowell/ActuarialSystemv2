@@ -7,6 +7,8 @@ interface ProjectionRequest {
   fixed_annual_rate?: number;
   indexed_annual_rate?: number;
   treasury_change?: number;
+  bbb_rate?: number;  // BBB rate for ceding commission (as decimal, e.g., 0.05 for 5%)
+  spread?: number;    // Spread for ceding commission (as decimal)
 }
 
 interface ProjectionSummary {
@@ -20,8 +22,16 @@ interface ProjectionSummary {
   final_av: number;
 }
 
+interface CedingCommission {
+  npv: number;
+  bbb_rate_pct: number;
+  spread_pct: number;
+  total_rate_pct: number;
+}
+
 interface ProjectionResponse {
   cost_of_funds_pct: number | null;
+  ceding_commission?: CedingCommission | null;
   policy_count: number;
   projection_months: number;
   summary: ProjectionSummary;
@@ -44,6 +54,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const fixedAnnualRate = body.fixed_annual_rate ?? DEFAULT_FIXED_ANNUAL_RATE;
     const indexedAnnualRate = body.indexed_annual_rate ?? DEFAULT_INDEXED_ANNUAL_RATE;
     const treasuryChange = body.treasury_change ?? 0;
+    const bbbRate = body.bbb_rate;  // Optional - only calculate ceding commission if provided
+    const spread = body.spread ?? 0;
 
     // For development: run the Rust binary directly
     // In production, this would call AWS Lambda
@@ -81,7 +93,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       projectionMonths,
       fixedAnnualRate,
       indexedAnnualRate,
-      treasuryChange
+      treasuryChange,
+      bbbRate,
+      spread
     );
 
     return NextResponse.json({
@@ -119,17 +133,27 @@ async function runLocalProjection(
   projectionMonths: number,
   fixedAnnualRate: number,
   indexedAnnualRate: number,
-  treasuryChange: number
+  treasuryChange: number,
+  bbbRate?: number,
+  spread?: number
 ): Promise<ProjectionResponse> {
   return new Promise((resolve) => {
     // Set environment variables for the projection config
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       PROJECTION_MONTHS: projectionMonths.toString(),
       FIXED_ANNUAL_RATE: fixedAnnualRate.toString(),
       INDEXED_ANNUAL_RATE: indexedAnnualRate.toString(),
       TREASURY_CHANGE: treasuryChange.toString(),
     };
+
+    // Add BBB rate and spread if provided for ceding commission calculation
+    if (bbbRate !== undefined) {
+      env.BBB_RATE = bbbRate.toString();
+    }
+    if (spread !== undefined) {
+      env.SPREAD = spread.toString();
+    }
 
     // Use --json flag for structured output
     const child = spawn(binaryPath, ["--json"], {

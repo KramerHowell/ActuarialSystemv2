@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import FredChart from "@/components/FredChart";
 
 // Types for the projection
 interface ProjectionConfig {
@@ -8,10 +9,20 @@ interface ProjectionConfig {
   fixedAnnualRate: number;
   indexedAnnualRate: number;
   treasuryChange: number;
+  bbbRate: number;
+  spread: number;
+}
+
+interface CedingCommission {
+  npv: number;
+  bbbRatePct: number;
+  spreadPct: number;
+  totalRatePct: number;
 }
 
 interface ProjectionResult {
   costOfFundsPct: number | null;
+  cedingCommission: CedingCommission | null;
   policyCount: number;
   projectionMonths: number;
   summary: {
@@ -59,6 +70,8 @@ export default function Home() {
     fixedAnnualRate: 2.75,
     indexedAnnualRate: 3.78,
     treasuryChange: 0,
+    bbbRate: 5.01,  // Current BBB rate
+    spread: 1.0,    // Default spread of 1%
   });
 
   const [result, setResult] = useState<ProjectionResult | null>(null);
@@ -78,6 +91,8 @@ export default function Home() {
           fixed_annual_rate: config.fixedAnnualRate / 100,
           indexed_annual_rate: config.indexedAnnualRate / 100,
           treasury_change: config.treasuryChange / 100,
+          bbb_rate: config.bbbRate / 100,
+          spread: config.spread / 100,
         }),
       });
 
@@ -88,6 +103,12 @@ export default function Home() {
       const data = await response.json();
       setResult({
         costOfFundsPct: data.cost_of_funds_pct,
+        cedingCommission: data.ceding_commission ? {
+          npv: data.ceding_commission.npv,
+          bbbRatePct: data.ceding_commission.bbb_rate_pct,
+          spreadPct: data.ceding_commission.spread_pct,
+          totalRatePct: data.ceding_commission.total_rate_pct,
+        } : null,
         policyCount: data.policy_count,
         projectionMonths: data.projection_months,
         summary: {
@@ -358,6 +379,60 @@ export default function Home() {
                         Affects dynamic lapse rates
                       </p>
                     </div>
+
+                    <div className="border-t border-[--border-color] pt-4 mt-4">
+                      <p className="text-sm font-semibold text-[--text-muted] mb-3">Ceding Commission</p>
+
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm text-[--text-muted] mb-1">
+                            BBB Rate (%)
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={config.bbbRate}
+                            onChange={(e) =>
+                              setConfig({
+                                ...config,
+                                bbbRate: parseFloat(e.target.value) || 5.01,
+                              })
+                            }
+                            className="w-full bg-[--bg-secondary] border border-[--border-color] rounded-lg px-4 py-2 text-[--text-primary] focus:outline-none focus:border-[--accent]"
+                          />
+                          <p className="text-xs text-[--text-muted] mt-1">
+                            ICE BofA BBB Corporate Index
+                          </p>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm text-[--text-muted] mb-1">
+                            Spread (%)
+                          </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={config.spread}
+                            onChange={(e) =>
+                              setConfig({
+                                ...config,
+                                spread: parseFloat(e.target.value) || 1.0,
+                              })
+                            }
+                            className="w-full bg-[--bg-secondary] border border-[--border-color] rounded-lg px-4 py-2 text-[--text-primary] focus:outline-none focus:border-[--accent]"
+                          />
+                        </div>
+
+                        <div className="bg-[--bg-secondary] rounded-lg p-3">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-[--text-muted]">Total Discount Rate</span>
+                            <span className="font-semibold text-[--accent]">
+                              {(config.bbbRate + config.spread).toFixed(2)}%
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -395,12 +470,34 @@ export default function Home() {
                           {formatCurrency(result.summary.finalAv)}
                         </span>
                       </div>
-                      <div className="flex justify-between py-2">
+                      <div className="flex justify-between py-2 border-b border-[--border-color]">
                         <span className="text-[--text-muted]">Execution Time</span>
                         <span className="font-semibold">
                           {result.executionTimeMs}ms
                         </span>
                       </div>
+
+                      {/* Ceding Commission */}
+                      {result.cedingCommission && (
+                        <div className="mt-4 pt-4 border-t border-[--border-color]">
+                          <p className="text-sm font-semibold text-[--accent] mb-3">Ceding Commission</p>
+                          <div className="bg-[--bg-secondary] rounded-lg p-4">
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <p className="text-xs text-[--text-muted]">
+                                  NPV @ {result.cedingCommission.totalRatePct.toFixed(2)}%
+                                </p>
+                                <p className="text-xs text-[--text-muted]">
+                                  (BBB {result.cedingCommission.bbbRatePct.toFixed(2)}% + {result.cedingCommission.spreadPct.toFixed(2)}% spread)
+                                </p>
+                              </div>
+                              <p className="text-2xl font-bold text-[--accent]">
+                                {formatCurrency(result.cedingCommission.npv)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="text-center py-12 text-[--text-muted]">
@@ -415,15 +512,57 @@ export default function Home() {
 
           {/* Assumptions Tab */}
           {activeTab === "Assumptions" && (
-            <div className="bg-[--bg-card] rounded-xl p-6 border border-[--border-color]">
-              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <span>⚙️</span>
-                Assumptions Management
-              </h3>
-              <div className="text-center py-12 text-[--text-muted]">
-                <p className="text-4xl mb-4">⚙️</p>
-                <p>Assumptions editor coming soon</p>
-                <p className="text-sm mt-2">Manage mortality, lapse, and expense assumptions</p>
+            <div className="space-y-6">
+              {/* BBB Rate Chart */}
+              <div className="bg-[--bg-card] rounded-xl p-6 border border-[--border-color]">
+                <FredChart
+                  onRateSelect={(rate) => {
+                    setConfig({ ...config, bbbRate: rate });
+                  }}
+                />
+                <div className="mt-4 p-3 bg-[--bg-secondary] rounded-lg flex justify-between items-center">
+                  <span className="text-sm text-[--text-muted]">
+                    Click a date on the chart to use that BBB rate
+                  </span>
+                  <span className="font-semibold">
+                    Current: {config.bbbRate.toFixed(2)}% + {config.spread.toFixed(2)}% = {(config.bbbRate + config.spread).toFixed(2)}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Rate Usage Info */}
+              <div className="bg-[--bg-card] rounded-xl p-6 border border-[--border-color]">
+                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                  <span>📊</span>
+                  Rate Applications
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-[--bg-secondary] rounded-lg p-4">
+                    <p className="text-sm text-[--text-muted] mb-1">Ceding Commission Basis</p>
+                    <p className="text-sm">
+                      The BBB corporate yield is used to derive the ceding commission rate
+                      for reinsurance arrangements.
+                    </p>
+                  </div>
+                  <div className="bg-[--bg-secondary] rounded-lg p-4">
+                    <p className="text-sm text-[--text-muted] mb-1">Crediting Rate Reference</p>
+                    <p className="text-sm">
+                      Corporate yields provide a benchmark for setting indexed crediting
+                      rates on annuity products.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Other assumptions placeholder */}
+              <div className="bg-[--bg-card] rounded-xl p-6 border border-[--border-color]">
+                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                  <span>⚙️</span>
+                  Other Assumptions
+                </h3>
+                <div className="text-center py-8 text-[--text-muted]">
+                  <p>Mortality, lapse, and expense assumption editors coming soon</p>
+                </div>
               </div>
             </div>
           )}
