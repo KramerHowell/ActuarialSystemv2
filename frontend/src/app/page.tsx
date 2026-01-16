@@ -2,15 +2,29 @@
 
 import { useState } from "react";
 import FredChart from "@/components/FredChart";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+} from "recharts";
 
 // Types for the projection
 interface ProjectionConfig {
-  projectionMonths: number;
   fixedAnnualRate: number;
   indexedAnnualRate: number;
   treasuryChange: number;
   bbbRate: number;
   spread: number;
+  // Dynamic inforce parameters
+  useDynamicInforce: boolean;
+  inforceFixedPct: number;
+  inforceBBBonus: number;
+  rollupRate: number;
 }
 
 interface CedingCommission {
@@ -20,9 +34,37 @@ interface CedingCommission {
   totalRatePct: number;
 }
 
+interface InforceParamsOutput {
+  fixedPct: number;
+  bonus: number;
+}
+
+interface DetailedCashflowRow {
+  month: number;
+  bopAv: number;
+  bopBb: number;
+  lives: number;
+  mortality: number;
+  lapse: number;
+  pwd: number;
+  riderCharges: number;
+  surrenderCharges: number;
+  interest: number;
+  eopAv: number;
+  expenses: number;
+  agentCommission: number;
+  imoOverride: number;
+  wholesalerOverride: number;
+  bonusComp: number;
+  chargebacks: number;
+  hedgeGains: number;
+  netCashflow: number;
+}
+
 interface ProjectionResult {
   costOfFundsPct: number | null;
   cedingCommission: CedingCommission | null;
+  inforceParams: InforceParamsOutput | null;
   policyCount: number;
   projectionMonths: number;
   summary: {
@@ -35,6 +77,7 @@ interface ProjectionResult {
     finalLives: number;
     finalAv: number;
   };
+  cashflows: DetailedCashflowRow[];
   executionTimeMs: number;
   error?: string;
 }
@@ -66,12 +109,16 @@ const formatPercent = (value: number): string => {
 export default function Home() {
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [config, setConfig] = useState<ProjectionConfig>({
-    projectionMonths: 768,
     fixedAnnualRate: 2.75,
     indexedAnnualRate: 3.78,
     treasuryChange: 0,
     bbbRate: 5.01,  // Current BBB rate
     spread: 1.0,    // Default spread of 1%
+    // Dynamic inforce parameters
+    useDynamicInforce: true,  // Use dynamic generation by default
+    inforceFixedPct: 25,      // 25% fixed, 75% indexed
+    inforceBBBonus: 30,       // 30% BB bonus (BB = Premium × 1.3)
+    rollupRate: 10,           // 10% annual rollup
   });
 
   const [result, setResult] = useState<ProjectionResult | null>(null);
@@ -87,12 +134,17 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projection_months: config.projectionMonths,
+          projection_months: 768,
           fixed_annual_rate: config.fixedAnnualRate / 100,
           indexed_annual_rate: config.indexedAnnualRate / 100,
           treasury_change: config.treasuryChange / 100,
           bbb_rate: config.bbbRate / 100,
           spread: config.spread / 100,
+          // Dynamic inforce parameters
+          use_dynamic_inforce: config.useDynamicInforce,
+          inforce_fixed_pct: config.inforceFixedPct / 100,
+          inforce_bb_bonus: config.inforceBBBonus / 100,
+          rollup_rate: config.rollupRate / 100,
         }),
       });
 
@@ -109,6 +161,10 @@ export default function Home() {
           spreadPct: data.ceding_commission.spread_pct,
           totalRatePct: data.ceding_commission.total_rate_pct,
         } : null,
+        inforceParams: data.inforce_params ? {
+          fixedPct: data.inforce_params.fixed_pct,
+          bonus: data.inforce_params.bonus,
+        } : null,
         policyCount: data.policy_count,
         projectionMonths: data.projection_months,
         summary: {
@@ -121,6 +177,27 @@ export default function Home() {
           finalLives: data.summary.final_lives,
           finalAv: data.summary.final_av,
         },
+        cashflows: (data.cashflows || []).map((cf: Record<string, number>) => ({
+          month: cf.month,
+          bopAv: cf.bop_av,
+          bopBb: cf.bop_bb,
+          lives: cf.lives,
+          mortality: cf.mortality,
+          lapse: cf.lapse,
+          pwd: cf.pwd,
+          riderCharges: cf.rider_charges,
+          surrenderCharges: cf.surrender_charges,
+          interest: cf.interest,
+          eopAv: cf.eop_av,
+          expenses: cf.expenses,
+          agentCommission: cf.agent_commission,
+          imoOverride: cf.imo_override,
+          wholesalerOverride: cf.wholesaler_override,
+          bonusComp: cf.bonus_comp,
+          chargebacks: cf.chargebacks,
+          hedgeGains: cf.hedge_gains,
+          netCashflow: cf.net_cashflow,
+        })),
         executionTimeMs: data.execution_time_ms,
         error: data.error,
       });
@@ -295,6 +372,115 @@ export default function Home() {
                 </div>
               </div>
 
+              {/* Inforce Configuration Panel */}
+              <div className="bg-[--bg-card] rounded-xl p-6 border border-[--border-color]">
+                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                  <span>👥</span>
+                  Inforce Configuration
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-[--text-muted]">
+                      Use Dynamic Generation
+                    </label>
+                    <button
+                      onClick={() =>
+                        setConfig({ ...config, useDynamicInforce: !config.useDynamicInforce })
+                      }
+                      className={`w-12 h-6 rounded-full transition-colors ${
+                        config.useDynamicInforce ? "bg-[--accent]" : "bg-[--bg-secondary]"
+                      }`}
+                    >
+                      <div
+                        className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                          config.useDynamicInforce ? "translate-x-6" : "translate-x-0.5"
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {config.useDynamicInforce && (
+                    <>
+                      <div className="grid grid-cols-3 gap-4">
+                        <div>
+                          <label className="block text-sm text-[--text-muted] mb-1">
+                            Fixed Allocation (%)
+                          </label>
+                          <input
+                            type="number"
+                            step="5"
+                            min="0"
+                            max="100"
+                            value={config.inforceFixedPct}
+                            onChange={(e) =>
+                              setConfig({
+                                ...config,
+                                inforceFixedPct: parseFloat(e.target.value) || 25,
+                              })
+                            }
+                            className="w-full bg-[--bg-secondary] border border-[--border-color] rounded-lg px-4 py-2 text-[--text-primary] focus:outline-none focus:border-[--accent]"
+                          />
+                          <p className="text-xs text-[--text-muted] mt-1">
+                            Indexed: {100 - config.inforceFixedPct}%
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-sm text-[--text-muted] mb-1">
+                            Benefit Base Bonus (%)
+                          </label>
+                          <input
+                            type="number"
+                            step="5"
+                            min="0"
+                            max="100"
+                            value={config.inforceBBBonus}
+                            onChange={(e) =>
+                              setConfig({
+                                ...config,
+                                inforceBBBonus: parseFloat(e.target.value) || 30,
+                              })
+                            }
+                            className="w-full bg-[--bg-secondary] border border-[--border-color] rounded-lg px-4 py-2 text-[--text-primary] focus:outline-none focus:border-[--accent]"
+                          />
+                          <p className="text-xs text-[--text-muted] mt-1">
+                            BB = Premium × (1 + {config.inforceBBBonus}%) = ×{(1 + config.inforceBBBonus / 100).toFixed(2)}
+                          </p>
+                        </div>
+                        <div>
+                          <label className="block text-sm text-[--text-muted] mb-1">
+                            Rollup Rate (%)
+                          </label>
+                          <input
+                            type="number"
+                            step="1"
+                            min="0"
+                            max="20"
+                            value={config.rollupRate}
+                            onChange={(e) =>
+                              setConfig({
+                                ...config,
+                                rollupRate: parseFloat(e.target.value) || 10,
+                              })
+                            }
+                            className="w-full bg-[--bg-secondary] border border-[--border-color] rounded-lg px-4 py-2 text-[--text-primary] focus:outline-none focus:border-[--accent]"
+                          />
+                          <p className="text-xs text-[--text-muted] mt-1">
+                            Annual BB rollup during deferral
+                          </p>
+                        </div>
+                      </div>
+
+                    </>
+                  )}
+
+                  {!config.useDynamicInforce && (
+                    <div className="bg-[--bg-secondary] rounded-lg p-3 text-sm text-[--text-muted]">
+                      Using static pricing_inforce.csv (806 policies)
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Configuration Panel */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-[--bg-card] rounded-xl p-6 border border-[--border-color]">
@@ -303,26 +489,6 @@ export default function Home() {
                     Projection Configuration
                   </h3>
                   <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm text-[--text-muted] mb-1">
-                        Projection Months
-                      </label>
-                      <input
-                        type="number"
-                        value={config.projectionMonths}
-                        onChange={(e) =>
-                          setConfig({
-                            ...config,
-                            projectionMonths: parseInt(e.target.value) || 768,
-                          })
-                        }
-                        className="w-full bg-[--bg-secondary] border border-[--border-color] rounded-lg px-4 py-2 text-[--text-primary] focus:outline-none focus:border-[--accent]"
-                      />
-                      <p className="text-xs text-[--text-muted] mt-1">
-                        768 months = terminal age 121 for issue age 57
-                      </p>
-                    </div>
-
                     <div>
                       <label className="block text-sm text-[--text-muted] mb-1">
                         Fixed Annual Rate (%)
@@ -443,61 +609,56 @@ export default function Home() {
                     Projection Results
                   </h3>
                   {result ? (
-                    <div className="space-y-3">
-                      <div className="flex justify-between py-2 border-b border-[--border-color]">
-                        <span className="text-[--text-muted]">Month 1 Cashflow</span>
-                        <span className="font-semibold">
-                          {formatCurrency(result.summary.month1Cashflow)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between py-2 border-b border-[--border-color]">
-                        <span className="text-[--text-muted]">
-                          Total Net Cashflows
-                        </span>
-                        <span className="font-semibold">
-                          {formatCurrency(result.summary.totalNetCashflows)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between py-2 border-b border-[--border-color]">
-                        <span className="text-[--text-muted]">Final Lives</span>
-                        <span className="font-semibold">
-                          {result.summary.finalLives.toFixed(4)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between py-2 border-b border-[--border-color]">
-                        <span className="text-[--text-muted]">Final AV</span>
-                        <span className="font-semibold">
-                          {formatCurrency(result.summary.finalAv)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between py-2 border-b border-[--border-color]">
-                        <span className="text-[--text-muted]">Execution Time</span>
-                        <span className="font-semibold">
-                          {result.executionTimeMs}ms
-                        </span>
-                      </div>
-
-                      {/* Ceding Commission */}
+                    <div className="space-y-4">
+                      {/* Ceding Commission - Prominent Display */}
                       {result.cedingCommission && (
-                        <div className="mt-4 pt-4 border-t border-[--border-color]">
-                          <p className="text-sm font-semibold text-[--accent] mb-3">Ceding Commission</p>
-                          <div className="bg-[--bg-secondary] rounded-lg p-4">
-                            <div className="flex justify-between items-center">
-                              <div>
-                                <p className="text-xs text-[--text-muted]">
-                                  NPV @ {result.cedingCommission.totalRatePct.toFixed(2)}%
-                                </p>
-                                <p className="text-xs text-[--text-muted]">
-                                  (BBB {result.cedingCommission.bbbRatePct.toFixed(2)}% + {result.cedingCommission.spreadPct.toFixed(2)}% spread)
-                                </p>
-                              </div>
-                              <p className="text-2xl font-bold text-[--accent]">
-                                {formatCurrency(result.cedingCommission.npv)}
+                        <div className="bg-gradient-to-r from-[--bg-secondary] to-[--bg-card] rounded-lg p-4 border border-[--accent]/30">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              <p className="text-sm font-semibold text-[--accent]">Ceding Commission</p>
+                              <p className="text-xs text-[--text-muted]">
+                                NPV @ {result.cedingCommission.totalRatePct.toFixed(2)}% (BBB + spread)
                               </p>
                             </div>
+                            <p className="text-2xl font-bold text-[--accent]">
+                              {formatCurrency(result.cedingCommission.npv)}
+                            </p>
                           </div>
                         </div>
                       )}
+
+                      {/* Key Metrics */}
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div className="flex justify-between py-1">
+                          <span className="text-[--text-muted]">Total Net Cashflows</span>
+                          <span className="font-semibold">{formatCurrency(result.summary.totalNetCashflows)}</span>
+                        </div>
+                        <div className="flex justify-between py-1">
+                          <span className="text-[--text-muted]">Execution Time</span>
+                          <span className="font-semibold">{result.executionTimeMs}ms</span>
+                        </div>
+                      </div>
+
+                      {/* CSV Download */}
+                      <button
+                        onClick={() => {
+                          const headers = "Month,BOP_AV,BOP_BB,Lives,Mortality,Lapse,PWD,RiderCharges,SurrCharges,Interest,EOP_AV,Expenses,AgentComm,IMOOverride,WholesalerOverride,BonusComp,Chargebacks,HedgeGains,NetCashflow";
+                          const rows = result.cashflows.map(cf =>
+                            `${cf.month},${cf.bopAv.toFixed(2)},${cf.bopBb.toFixed(2)},${cf.lives.toFixed(8)},${cf.mortality.toFixed(2)},${cf.lapse.toFixed(2)},${cf.pwd.toFixed(2)},${cf.riderCharges.toFixed(2)},${cf.surrenderCharges.toFixed(2)},${cf.interest.toFixed(2)},${cf.eopAv.toFixed(2)},${cf.expenses.toFixed(2)},${cf.agentCommission.toFixed(2)},${cf.imoOverride.toFixed(2)},${cf.wholesalerOverride.toFixed(2)},${cf.bonusComp.toFixed(2)},${cf.chargebacks.toFixed(2)},${cf.hedgeGains.toFixed(2)},${cf.netCashflow.toFixed(2)}`
+                          );
+                          const csv = [headers, ...rows].join("\n");
+                          const blob = new Blob([csv], { type: "text/csv" });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = "block_projection_output.csv";
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        }}
+                        className="w-full py-2 px-4 bg-[--bg-secondary] hover:bg-[--accent]/20 border border-[--border-color] rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                      >
+                        <span>Download Cashflows CSV</span>
+                      </button>
                     </div>
                   ) : (
                     <div className="text-center py-12 text-[--text-muted]">
@@ -507,6 +668,60 @@ export default function Home() {
                   )}
                 </div>
               </div>
+
+              {/* Cashflow Chart - Full Width Below */}
+              {result && result.cashflows.length > 0 && (
+                <div className="bg-[--bg-card] rounded-xl p-6 border border-[--border-color]">
+                  <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                    <span>📈</span>
+                    Net Cashflows (Months 2+)
+                  </h3>
+                  <p className="text-xs text-[--text-muted] mb-4">
+                    Month 1 ({formatCurrency(result.cashflows[0]?.netCashflow || 0)}) excluded for scale
+                  </p>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={result.cashflows.slice(1).map((cf) => ({
+                          month: cf.month,
+                          cashflow: cf.netCashflow,
+                        }))}
+                        margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" />
+                        <XAxis
+                          dataKey="month"
+                          stroke="var(--text-muted)"
+                          fontSize={12}
+                          tickFormatter={(v) => v % 120 === 0 ? `${v}` : ""}
+                        />
+                        <YAxis
+                          stroke="var(--text-muted)"
+                          fontSize={12}
+                          tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "var(--bg-card)",
+                            border: "1px solid var(--border-color)",
+                            borderRadius: "8px",
+                          }}
+                          formatter={(value) => [formatCurrency(value as number), "Net Cashflow"]}
+                          labelFormatter={(label) => `Month ${label}`}
+                        />
+                        <ReferenceLine y={0} stroke="var(--text-muted)" strokeDasharray="3 3" />
+                        <Line
+                          type="monotone"
+                          dataKey="cashflow"
+                          stroke="var(--accent)"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
             </>
           )}
 

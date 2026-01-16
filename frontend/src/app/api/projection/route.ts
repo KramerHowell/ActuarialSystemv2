@@ -9,6 +9,15 @@ interface ProjectionRequest {
   treasury_change?: number;
   bbb_rate?: number;  // BBB rate for ceding commission (as decimal, e.g., 0.05 for 5%)
   spread?: number;    // Spread for ceding commission (as decimal)
+  // Dynamic inforce parameters
+  use_dynamic_inforce?: boolean;
+  inforce_fixed_pct?: number;
+  inforce_male_mult?: number;
+  inforce_female_mult?: number;
+  inforce_qual_mult?: number;
+  inforce_nonqual_mult?: number;
+  inforce_bb_bonus?: number;
+  rollup_rate?: number;
 }
 
 interface ProjectionSummary {
@@ -29,12 +38,45 @@ interface CedingCommission {
   total_rate_pct: number;
 }
 
+interface InforceParamsOutput {
+  fixed_pct: number;
+  male_mult: number;
+  female_mult: number;
+  qual_mult: number;
+  nonqual_mult: number;
+  bonus: number;
+}
+
+interface DetailedCashflowRow {
+  month: number;
+  bop_av: number;
+  bop_bb: number;
+  lives: number;
+  mortality: number;
+  lapse: number;
+  pwd: number;
+  rider_charges: number;
+  surrender_charges: number;
+  interest: number;
+  eop_av: number;
+  expenses: number;
+  agent_commission: number;
+  imo_override: number;
+  wholesaler_override: number;
+  bonus_comp: number;
+  chargebacks: number;
+  hedge_gains: number;
+  net_cashflow: number;
+}
+
 interface ProjectionResponse {
   cost_of_funds_pct: number | null;
   ceding_commission?: CedingCommission | null;
+  inforce_params?: InforceParamsOutput | null;
   policy_count: number;
   projection_months: number;
   summary: ProjectionSummary;
+  cashflows: DetailedCashflowRow[];
   execution_time_ms: number;
   error?: string;
 }
@@ -56,6 +98,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const treasuryChange = body.treasury_change ?? 0;
     const bbbRate = body.bbb_rate;  // Optional - only calculate ceding commission if provided
     const spread = body.spread ?? 0;
+
+    // Dynamic inforce parameters
+    const useDynamicInforce = body.use_dynamic_inforce ?? false;
+    const inforceFixedPct = body.inforce_fixed_pct ?? 0.25;
+    const inforceMaleMult = body.inforce_male_mult ?? 1.0;
+    const inforceFemaleMult = body.inforce_female_mult ?? 1.0;
+    const inforceQualMult = body.inforce_qual_mult ?? 1.0;
+    const inforceNonqualMult = body.inforce_nonqual_mult ?? 1.0;
+    const inforceBBBonus = body.inforce_bb_bonus ?? 0.30;
+    const rollupRate = body.rollup_rate ?? 0.10;
 
     // For development: run the Rust binary directly
     // In production, this would call AWS Lambda
@@ -95,7 +147,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       indexedAnnualRate,
       treasuryChange,
       bbbRate,
-      spread
+      spread,
+      useDynamicInforce,
+      inforceFixedPct,
+      inforceMaleMult,
+      inforceFemaleMult,
+      inforceQualMult,
+      inforceNonqualMult,
+      inforceBBBonus,
+      rollupRate
     );
 
     return NextResponse.json({
@@ -135,7 +195,15 @@ async function runLocalProjection(
   indexedAnnualRate: number,
   treasuryChange: number,
   bbbRate?: number,
-  spread?: number
+  spread?: number,
+  useDynamicInforce?: boolean,
+  inforceFixedPct?: number,
+  inforceMaleMult?: number,
+  inforceFemaleMult?: number,
+  inforceQualMult?: number,
+  inforceNonqualMult?: number,
+  inforceBBBonus?: number,
+  rollupRate?: number
 ): Promise<ProjectionResponse> {
   return new Promise((resolve) => {
     // Set environment variables for the projection config
@@ -153,6 +221,32 @@ async function runLocalProjection(
     }
     if (spread !== undefined) {
       env.SPREAD = spread.toString();
+    }
+
+    // Add dynamic inforce parameters
+    if (useDynamicInforce) {
+      env.USE_DYNAMIC_INFORCE = "1";
+      if (inforceFixedPct !== undefined) {
+        env.INFORCE_FIXED_PCT = inforceFixedPct.toString();
+      }
+      if (inforceMaleMult !== undefined) {
+        env.INFORCE_MALE_MULT = inforceMaleMult.toString();
+      }
+      if (inforceFemaleMult !== undefined) {
+        env.INFORCE_FEMALE_MULT = inforceFemaleMult.toString();
+      }
+      if (inforceQualMult !== undefined) {
+        env.INFORCE_QUAL_MULT = inforceQualMult.toString();
+      }
+      if (inforceNonqualMult !== undefined) {
+        env.INFORCE_NONQUAL_MULT = inforceNonqualMult.toString();
+      }
+      if (inforceBBBonus !== undefined) {
+        env.INFORCE_BB_BONUS = inforceBBBonus.toString();
+      }
+      if (rollupRate !== undefined) {
+        env.ROLLUP_RATE = rollupRate.toString();
+      }
     }
 
     // Use --json flag for structured output
@@ -214,6 +308,27 @@ function getMockResponse(projectionMonths: number): ProjectionResponse {
       final_lives: 0.0001,
       final_av: 0,
     },
+    cashflows: Array(projectionMonths).fill(0).map((_, i) => ({
+      month: i + 1,
+      bop_av: 100000000 * Math.exp(-i / 200),
+      bop_bb: 130000000 * Math.exp(-i / 300),
+      lives: 806 * Math.exp(-i / 200),
+      mortality: 1000,
+      lapse: 500,
+      pwd: 200,
+      rider_charges: 0,
+      surrender_charges: 0,
+      interest: 50000,
+      eop_av: 100000000 * Math.exp(-i / 200),
+      expenses: 20000,
+      agent_commission: i === 0 ? 6000000 : 0,
+      imo_override: i === 0 ? 2500000 : 0,
+      wholesaler_override: i === 0 ? 340000 : 0,
+      bonus_comp: 0,
+      chargebacks: 4000,
+      hedge_gains: 1000,
+      net_cashflow: i === 0 ? 90000000 : -100000 * Math.exp(-i / 100),
+    })),
     execution_time_ms: 0,
   };
 }

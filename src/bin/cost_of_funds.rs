@@ -4,6 +4,9 @@
 //! Supports JSON output for API integration via --json flag
 //! Accepts config via environment variables:
 //!   PROJECTION_MONTHS, FIXED_ANNUAL_RATE, INDEXED_ANNUAL_RATE, TREASURY_CHANGE
+//!   INFORCE_FIXED_PCT, INFORCE_MALE_MULT, INFORCE_FEMALE_MULT,
+//!   INFORCE_QUAL_MULT, INFORCE_NONQUAL_MULT, INFORCE_BONUS
+//! Set USE_DYNAMIC_INFORCE=1 to generate policies dynamically instead of loading CSV
 
 use actuarial_system::{
     Assumptions,
@@ -12,7 +15,7 @@ use actuarial_system::{
         calculate_cost_of_funds, DEFAULT_FIXED_ANNUAL_RATE, DEFAULT_INDEXED_ANNUAL_RATE,
     },
 };
-use actuarial_system::policy::load_default_inforce;
+use actuarial_system::policy::{load_default_inforce, AdjustmentParams, load_adjusted_inforce};
 use rayon::prelude::*;
 use serde::Serialize;
 use std::env;
@@ -22,10 +25,45 @@ use std::time::Instant;
 struct ProjectionResponse {
     cost_of_funds_pct: Option<f64>,
     ceding_commission: Option<CedingCommission>,
+    inforce_params: Option<InforceParamsOutput>,
     policy_count: usize,
     projection_months: u32,
     summary: ProjectionSummary,
+    cashflows: Vec<DetailedCashflowRow>,
     execution_time_ms: u64,
+}
+
+#[derive(Serialize, Clone, Default)]
+struct DetailedCashflowRow {
+    month: u32,
+    bop_av: f64,
+    bop_bb: f64,
+    lives: f64,
+    mortality: f64,
+    lapse: f64,
+    pwd: f64,
+    rider_charges: f64,
+    surrender_charges: f64,
+    interest: f64,
+    eop_av: f64,
+    expenses: f64,
+    agent_commission: f64,
+    imo_override: f64,
+    wholesaler_override: f64,
+    bonus_comp: f64,
+    chargebacks: f64,
+    hedge_gains: f64,
+    net_cashflow: f64,
+}
+
+#[derive(Serialize)]
+struct InforceParamsOutput {
+    fixed_pct: f64,
+    male_mult: f64,
+    female_mult: f64,
+    qual_mult: f64,
+    nonqual_mult: f64,
+    bonus: f64,
 }
 
 #[derive(Serialize)]
@@ -103,11 +141,58 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0);
 
-    if !json_output {
-        println!("Loading policies from pricing_inforce.csv...");
-    }
+    // Inforce adjustment parameters
+    let use_adjusted = env::var("USE_DYNAMIC_INFORCE").is_ok();
 
-    let policies = load_default_inforce().expect("Failed to load policies");
+    let adjustment_params = AdjustmentParams {
+        fixed_pct: env::var("INFORCE_FIXED_PCT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.25),
+        male_mult: env::var("INFORCE_MALE_MULT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        female_mult: env::var("INFORCE_FEMALE_MULT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        qual_mult: env::var("INFORCE_QUAL_MULT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        nonqual_mult: env::var("INFORCE_NONQUAL_MULT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        bb_bonus: env::var("INFORCE_BB_BONUS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.30),
+        target_premium: 100_000_000.0,
+    };
+
+    // Rollup rate override (default 10%)
+    let rollup_rate: f64 = env::var("ROLLUP_RATE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.10);
+
+    // Load policies (with optional adjustments)
+    let policies = if use_adjusted {
+        if !json_output {
+            println!("Loading adjusted inforce (fixed_pct={:.0}%, bb_bonus={:.0}%, rollup={:.0}%)...",
+                     adjustment_params.fixed_pct * 100.0,
+                     adjustment_params.bb_bonus * 100.0,
+                     rollup_rate * 100.0);
+        }
+        load_adjusted_inforce(&adjustment_params).expect("Failed to load adjusted policies")
+    } else {
+        if !json_output {
+            println!("Loading policies from pricing_inforce.csv...");
+        }
+        load_default_inforce().expect("Failed to load policies")
+    };
 
     if !json_output {
         println!("Loaded {} policies in {:?}", policies.len(), start.elapsed());
@@ -115,8 +200,9 @@ fn main() {
 
     let policy_count = policies.len();
 
-    // Load assumptions
-    let assumptions = Assumptions::default_pricing();
+    // Load assumptions and apply rollup rate override
+    let mut assumptions = Assumptions::default_pricing();
+    assumptions.product.glwb.rollup_rate = rollup_rate;
 
     // Projection config from environment
     let config = ProjectionConfig {
@@ -150,9 +236,11 @@ fn main() {
         println!("Projections complete in {:?}", proj_start.elapsed());
     }
 
-    // Aggregate results
+    // Aggregate results with all detailed columns
     let num_months = config.projection_months as usize;
-    let mut aggregated_cashflows = vec![0.0_f64; num_months];
+    let mut detailed_cashflows: Vec<DetailedCashflowRow> = (1..=num_months as u32)
+        .map(|m| DetailedCashflowRow { month: m, ..Default::default() })
+        .collect();
     let mut total_initial_av = 0.0;
     let mut total_initial_bb = 0.0;
     let mut total_initial_lives = 0.0;
@@ -164,7 +252,25 @@ fn main() {
         for row in &result.cashflows {
             let idx = (row.projection_month - 1) as usize;
             if idx < num_months {
-                aggregated_cashflows[idx] += row.total_net_cashflow;
+                let agg = &mut detailed_cashflows[idx];
+                agg.bop_av += row.bop_av;
+                agg.bop_bb += row.bop_benefit_base;
+                agg.lives += row.lives;
+                agg.mortality += row.mortality_dec;
+                agg.lapse += row.lapse_dec;
+                agg.pwd += row.pwd_dec;
+                agg.rider_charges += row.rider_charges_dec;
+                agg.surrender_charges += row.surrender_charges_dec;
+                agg.interest += row.interest_credits_dec;
+                agg.eop_av += row.eop_av;
+                agg.expenses += row.expenses;
+                agg.agent_commission += row.agent_commission;
+                agg.imo_override += row.imo_override;
+                agg.wholesaler_override += row.wholesaler_override;
+                agg.bonus_comp += row.bonus_comp;
+                agg.chargebacks += row.chargebacks;
+                agg.hedge_gains += row.hedge_gains;
+                agg.net_cashflow += row.total_net_cashflow;
             }
         }
 
@@ -181,6 +287,8 @@ fn main() {
         }
     }
 
+    // Extract just net cashflows for IRR calculation
+    let aggregated_cashflows: Vec<f64> = detailed_cashflows.iter().map(|r| r.net_cashflow).collect();
     let total_net_cashflows: f64 = aggregated_cashflows.iter().sum();
     let month_1_cashflow = aggregated_cashflows.first().copied().unwrap_or(0.0);
 
@@ -203,9 +311,23 @@ fn main() {
 
     if json_output {
         // Output JSON for API consumption
+        let inforce_params_output = if use_adjusted {
+            Some(InforceParamsOutput {
+                fixed_pct: adjustment_params.fixed_pct,
+                male_mult: adjustment_params.male_mult,
+                female_mult: adjustment_params.female_mult,
+                qual_mult: adjustment_params.qual_mult,
+                nonqual_mult: adjustment_params.nonqual_mult,
+                bonus: adjustment_params.bb_bonus,
+            })
+        } else {
+            None
+        };
+
         let response = ProjectionResponse {
             cost_of_funds_pct,
             ceding_commission,
+            inforce_params: inforce_params_output,
             policy_count,
             projection_months,
             summary: ProjectionSummary {
@@ -218,6 +340,7 @@ fn main() {
                 final_lives,
                 final_av,
             },
+            cashflows: detailed_cashflows.clone(),
             execution_time_ms,
         };
         println!("{}", serde_json::to_string(&response).unwrap());
