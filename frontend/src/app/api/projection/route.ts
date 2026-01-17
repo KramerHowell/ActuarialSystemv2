@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { spawn } from "child_process";
-import path from "path";
+
+// Force dynamic execution - no caching
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 
 interface ProjectionRequest {
   projection_months?: number;
@@ -18,6 +20,14 @@ interface ProjectionRequest {
   inforce_nonqual_mult?: number;
   inforce_bb_bonus?: number;
   rollup_rate?: number;
+  // Policy filters
+  min_glwb_start_year?: number;
+  min_issue_age?: number;
+  max_issue_age?: number;
+  genders?: string[];
+  qual_statuses?: string[];
+  crediting_strategies?: string[];
+  bb_buckets?: string[];
 }
 
 interface ProjectionSummary {
@@ -109,25 +119,76 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const inforceBBBonus = body.inforce_bb_bonus ?? 0.30;
     const rollupRate = body.rollup_rate ?? 0.10;
 
-    // For development: run the Rust binary directly
-    // In production, this would call AWS Lambda
-    const projectRoot = path.resolve(process.cwd(), "..");
-    const binaryPath = path.join(projectRoot, "target", "release", "cost_of_funds");
+    // Policy filters
+    const minGlwbStartYear = body.min_glwb_start_year;
+    const minIssueAge = body.min_issue_age;
+    const maxIssueAge = body.max_issue_age;
+    const genders = body.genders;
+    const qualStatuses = body.qual_statuses;
+    const creditingStrategies = body.crediting_strategies;
+    const bbBuckets = body.bb_buckets;
 
-    // Check if we should use Lambda or local binary
+    // Check if we should use Lambda
     const useLambda = process.env.USE_LAMBDA === "true";
+    const lambdaUrl = process.env.LAMBDA_FUNCTION_URL;
 
-    if (useLambda && process.env.LAMBDA_FUNCTION_URL) {
-      // Call Lambda function
-      const lambdaResponse = await fetch(process.env.LAMBDA_FUNCTION_URL, {
+    console.log("ENV CHECK - USE_LAMBDA:", process.env.USE_LAMBDA, "useLambda:", useLambda, "LAMBDA_URL exists:", !!lambdaUrl);
+
+    // Always try Lambda first if configured
+    if (lambdaUrl) {
+      // Call Lambda function with all parameters
+      const lambdaPayload: Record<string, unknown> = {
+        projection_months: projectionMonths,
+        fixed_annual_rate: fixedAnnualRate,
+        indexed_annual_rate: indexedAnnualRate,
+        treasury_change: treasuryChange,
+        use_dynamic_inforce: useDynamicInforce,
+        inforce_fixed_pct: inforceFixedPct,
+        inforce_male_mult: inforceMaleMult,
+        inforce_female_mult: inforceFemaleMult,
+        inforce_qual_mult: inforceQualMult,
+        inforce_nonqual_mult: inforceNonqualMult,
+        inforce_bb_bonus: inforceBBBonus,
+        rollup_rate: rollupRate,
+      };
+
+      // Add optional parameters
+      if (bbbRate !== undefined) {
+        lambdaPayload.bbb_rate = bbbRate;
+      }
+      if (spread !== undefined) {
+        lambdaPayload.spread = spread;
+      }
+      if (minGlwbStartYear !== undefined) {
+        lambdaPayload.min_glwb_start_year = minGlwbStartYear;
+      }
+      if (minIssueAge !== undefined) {
+        lambdaPayload.min_issue_age = minIssueAge;
+      }
+      if (maxIssueAge !== undefined) {
+        lambdaPayload.max_issue_age = maxIssueAge;
+      }
+      if (genders !== undefined) {
+        lambdaPayload.genders = genders;
+      }
+      if (qualStatuses !== undefined) {
+        lambdaPayload.qual_statuses = qualStatuses;
+      }
+      if (creditingStrategies !== undefined) {
+        lambdaPayload.crediting_strategies = creditingStrategies;
+      }
+      if (bbBuckets !== undefined) {
+        lambdaPayload.bb_buckets = bbBuckets;
+      }
+
+      console.log("Calling Lambda at:", lambdaUrl);
+      console.log("Payload:", JSON.stringify(lambdaPayload));
+
+      const lambdaResponse = await fetch(lambdaUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projection_months: projectionMonths,
-          fixed_annual_rate: fixedAnnualRate,
-          indexed_annual_rate: indexedAnnualRate,
-          treasury_change: treasuryChange,
-        }),
+        body: JSON.stringify(lambdaPayload),
+        cache: "no-store",
       });
 
       if (!lambdaResponse.ok) {
@@ -135,33 +196,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
 
       const data = await lambdaResponse.json();
-      return NextResponse.json(data);
+      console.log("Lambda response COF:", data.cost_of_funds_pct);
+
+      const response = NextResponse.json({
+        ...data,
+        execution_time_ms: Date.now() - start,
+      });
+
+      // Prevent caching
+      response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      response.headers.set("Pragma", "no-cache");
+      response.headers.set("Expires", "0");
+
+      return response;
     }
 
-    // Local development: run Rust binary and parse output
-    const result = await runLocalProjection(
-      binaryPath,
-      projectRoot,
-      projectionMonths,
-      fixedAnnualRate,
-      indexedAnnualRate,
-      treasuryChange,
-      bbbRate,
-      spread,
-      useDynamicInforce,
-      inforceFixedPct,
-      inforceMaleMult,
-      inforceFemaleMult,
-      inforceQualMult,
-      inforceNonqualMult,
-      inforceBBBonus,
-      rollupRate
-    );
-
-    return NextResponse.json({
-      ...result,
-      execution_time_ms: Date.now() - start,
-    });
+    // No Lambda URL configured - return error
+    throw new Error("LAMBDA_FUNCTION_URL not configured");
   } catch (error) {
     console.error("Projection error:", error);
     return NextResponse.json(
@@ -185,150 +236,4 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       { status: 500 }
     );
   }
-}
-
-async function runLocalProjection(
-  binaryPath: string,
-  projectRoot: string,
-  projectionMonths: number,
-  fixedAnnualRate: number,
-  indexedAnnualRate: number,
-  treasuryChange: number,
-  bbbRate?: number,
-  spread?: number,
-  useDynamicInforce?: boolean,
-  inforceFixedPct?: number,
-  inforceMaleMult?: number,
-  inforceFemaleMult?: number,
-  inforceQualMult?: number,
-  inforceNonqualMult?: number,
-  inforceBBBonus?: number,
-  rollupRate?: number
-): Promise<ProjectionResponse> {
-  return new Promise((resolve) => {
-    // Set environment variables for the projection config
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      PROJECTION_MONTHS: projectionMonths.toString(),
-      FIXED_ANNUAL_RATE: fixedAnnualRate.toString(),
-      INDEXED_ANNUAL_RATE: indexedAnnualRate.toString(),
-      TREASURY_CHANGE: treasuryChange.toString(),
-    };
-
-    // Add BBB rate and spread if provided for ceding commission calculation
-    if (bbbRate !== undefined) {
-      env.BBB_RATE = bbbRate.toString();
-    }
-    if (spread !== undefined) {
-      env.SPREAD = spread.toString();
-    }
-
-    // Add dynamic inforce parameters
-    if (useDynamicInforce) {
-      env.USE_DYNAMIC_INFORCE = "1";
-      if (inforceFixedPct !== undefined) {
-        env.INFORCE_FIXED_PCT = inforceFixedPct.toString();
-      }
-      if (inforceMaleMult !== undefined) {
-        env.INFORCE_MALE_MULT = inforceMaleMult.toString();
-      }
-      if (inforceFemaleMult !== undefined) {
-        env.INFORCE_FEMALE_MULT = inforceFemaleMult.toString();
-      }
-      if (inforceQualMult !== undefined) {
-        env.INFORCE_QUAL_MULT = inforceQualMult.toString();
-      }
-      if (inforceNonqualMult !== undefined) {
-        env.INFORCE_NONQUAL_MULT = inforceNonqualMult.toString();
-      }
-      if (inforceBBBonus !== undefined) {
-        env.INFORCE_BB_BONUS = inforceBBBonus.toString();
-      }
-      if (rollupRate !== undefined) {
-        env.ROLLUP_RATE = rollupRate.toString();
-      }
-    }
-
-    // Use --json flag for structured output
-    const child = spawn(binaryPath, ["--json"], {
-      cwd: projectRoot,
-      env,
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    child.on("close", (code) => {
-      if (code !== 0) {
-        // If binary failed, return mock data for development
-        console.error("Binary failed:", stderr);
-        resolve(getMockResponse(projectionMonths));
-        return;
-      }
-
-      // Parse JSON output from the Rust binary
-      try {
-        const result = JSON.parse(stdout.trim());
-        resolve(result);
-      } catch {
-        console.error("Failed to parse JSON output:", stdout);
-        resolve(getMockResponse(projectionMonths));
-      }
-    });
-
-    child.on("error", (err) => {
-      console.error("Failed to spawn binary:", err);
-      // Return mock data if binary doesn't exist
-      resolve(getMockResponse(projectionMonths));
-    });
-  });
-}
-
-function getMockResponse(projectionMonths: number): ProjectionResponse {
-  // Mock response for development when binary isn't available
-  return {
-    cost_of_funds_pct: 5.24,
-    policy_count: 806,
-    projection_months: projectionMonths,
-    summary: {
-      total_premium: 100000000,
-      total_initial_av: 100000000,
-      total_initial_bb: 130000000,
-      total_initial_lives: 806.57,
-      total_net_cashflows: -45000000,
-      month_1_cashflow: -98000000,
-      final_lives: 0.0001,
-      final_av: 0,
-    },
-    cashflows: Array(projectionMonths).fill(0).map((_, i) => ({
-      month: i + 1,
-      bop_av: 100000000 * Math.exp(-i / 200),
-      bop_bb: 130000000 * Math.exp(-i / 300),
-      lives: 806 * Math.exp(-i / 200),
-      mortality: 1000,
-      lapse: 500,
-      pwd: 200,
-      rider_charges: 0,
-      surrender_charges: 0,
-      interest: 50000,
-      eop_av: 100000000 * Math.exp(-i / 200),
-      expenses: 20000,
-      agent_commission: i === 0 ? 6000000 : 0,
-      imo_override: i === 0 ? 2500000 : 0,
-      wholesaler_override: i === 0 ? 340000 : 0,
-      bonus_comp: 0,
-      chargebacks: 4000,
-      hedge_gains: 1000,
-      net_cashflow: i === 0 ? 90000000 : -100000 * Math.exp(-i / 100),
-    })),
-    execution_time_ms: 0,
-  };
 }

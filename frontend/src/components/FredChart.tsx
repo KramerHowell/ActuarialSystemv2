@@ -73,12 +73,16 @@ export default function FredChart({ onRateSelect }: FredChartProps) {
   }, [fetchData]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleChartClick = (data: any) => {
-    if (data?.activePayload && data.activePayload.length > 0) {
-      const point = data.activePayload[0].payload as Observation;
-      setSelectedPoint(point);
-      if (onRateSelect) {
-        onRateSelect(point.value, point.date);
+  const handleChartClick = (chartData: any) => {
+    // Use activeIndex to look up the data point directly
+    if (chartData?.activeIndex !== undefined) {
+      const index = parseInt(chartData.activeIndex, 10);
+      if (index >= 0 && index < data.length) {
+        const point = data[index];
+        setSelectedPoint(point);
+        if (onRateSelect) {
+          onRateSelect(point.value, point.date);
+        }
       }
     }
   };
@@ -97,6 +101,22 @@ export default function FredChart({ onRateSelect }: FredChartProps) {
     } catch {
       return dateStr;
     }
+  };
+
+  // Custom tooltip component
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length > 0) {
+      const point = payload[0].payload as Observation;
+      return (
+        <div className="bg-black/80 backdrop-blur-sm border border-white/20 rounded-lg px-3 py-2 shadow-lg">
+          <p className="text-white font-bold text-lg">{point.value.toFixed(2)}%</p>
+          <p className="text-white/70 text-xs">{formatTooltipDate(point.date)}</p>
+          <p className="text-[--accent] text-xs mt-1">Click to select</p>
+        </div>
+      );
+    }
+    return null;
   };
 
   // Calculate stats
@@ -122,11 +142,12 @@ export default function FredChart({ onRateSelect }: FredChartProps) {
         <div className="text-right">
           {selectedPoint ? (
             <>
-              <p className="text-3xl font-bold text-[--accent]">
+              <p className="text-3xl font-bold transition-colors text-[--accent]">
                 {selectedPoint.value.toFixed(2)}%
               </p>
               <p className="text-sm text-[--text-muted]">
                 {formatTooltipDate(selectedPoint.date)}
+                <span className="ml-2 text-[--accent]">• selected</span>
               </p>
             </>
           ) : latestValue ? (
@@ -173,6 +194,7 @@ export default function FredChart({ onRateSelect }: FredChartProps) {
               data={data}
               onClick={handleChartClick}
               margin={{ top: 5, right: 5, left: 0, bottom: 5 }}
+              style={{ cursor: "crosshair" }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" />
               <XAxis
@@ -190,21 +212,13 @@ export default function FredChart({ onRateSelect }: FredChartProps) {
                 tickFormatter={(value) => `${value}%`}
                 width={50}
               />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "var(--bg-card)",
-                  border: "1px solid var(--border-color)",
-                  borderRadius: "8px",
-                  color: "var(--text-primary)",
-                }}
-                labelFormatter={formatTooltipDate}
-                formatter={(value) => [`${Number(value).toFixed(2)}%`, "BBB Yield"]}
-              />
+              <Tooltip content={<CustomTooltip />} />
               {selectedPoint && (
                 <ReferenceLine
                   x={selectedPoint.date}
                   stroke="var(--accent)"
                   strokeDasharray="3 3"
+                  label={{ value: "Selected", fill: "var(--accent)", fontSize: 10, position: "top" }}
                 />
               )}
               <Line
@@ -250,7 +264,7 @@ export default function FredChart({ onRateSelect }: FredChartProps) {
 
       {/* Instructions */}
       <p className="text-xs text-[--text-muted] text-center">
-        Click or tap on the chart to select a specific date
+        Hover to preview rate • Click to select for ceding commission calculation
       </p>
     </div>
   );

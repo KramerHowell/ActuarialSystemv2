@@ -178,8 +178,31 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.10);
 
+    // Policy filters
+    let min_glwb_start_year: Option<u32> = env::var("MIN_GLWB_START_YEAR")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let min_issue_age: Option<u8> = env::var("MIN_ISSUE_AGE")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let max_issue_age: Option<u8> = env::var("MAX_ISSUE_AGE")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let filter_genders: Option<Vec<String>> = env::var("FILTER_GENDERS")
+        .ok()
+        .map(|s| s.split(',').map(|g| g.to_string()).collect());
+    let filter_qual_statuses: Option<Vec<String>> = env::var("FILTER_QUAL_STATUSES")
+        .ok()
+        .map(|s| s.split(',').map(|q| q.to_string()).collect());
+    let filter_crediting_strategies: Option<Vec<String>> = env::var("FILTER_CREDITING_STRATEGIES")
+        .ok()
+        .map(|s| s.split(',').map(|c| c.to_string()).collect());
+    let filter_bb_buckets: Option<Vec<String>> = env::var("FILTER_BB_BUCKETS")
+        .ok()
+        .map(|s| s.split('|').map(|b| b.to_string()).collect());
+
     // Load policies (with optional adjustments)
-    let policies = if use_adjusted {
+    let mut policies = if use_adjusted {
         if !json_output {
             println!("Loading adjusted inforce (fixed_pct={:.0}%, bb_bonus={:.0}%, rollup={:.0}%)...",
                      adjustment_params.fixed_pct * 100.0,
@@ -193,6 +216,68 @@ fn main() {
         }
         load_default_inforce().expect("Failed to load policies")
     };
+
+    // Apply policy filters
+    let initial_count = policies.len();
+
+    if let Some(min_year) = min_glwb_start_year {
+        policies.retain(|p| p.glwb_start_year >= min_year);
+    }
+
+    if let Some(min_age) = min_issue_age {
+        policies.retain(|p| p.issue_age >= min_age);
+    }
+
+    if let Some(max_age) = max_issue_age {
+        policies.retain(|p| p.issue_age <= max_age);
+    }
+
+    if let Some(ref genders) = filter_genders {
+        policies.retain(|p| {
+            let gender_str = match p.gender {
+                actuarial_system::policy::Gender::Male => "Male",
+                actuarial_system::policy::Gender::Female => "Female",
+            };
+            genders.contains(&gender_str.to_string())
+        });
+    }
+
+    if let Some(ref qual_statuses) = filter_qual_statuses {
+        policies.retain(|p| {
+            let qual_str = match p.qual_status {
+                actuarial_system::policy::QualStatus::Q => "Q",
+                actuarial_system::policy::QualStatus::N => "N",
+            };
+            qual_statuses.contains(&qual_str.to_string())
+        });
+    }
+
+    if let Some(ref crediting) = filter_crediting_strategies {
+        policies.retain(|p| {
+            let cred_str = match p.crediting_strategy {
+                actuarial_system::policy::CreditingStrategy::Fixed => "Fixed",
+                actuarial_system::policy::CreditingStrategy::Indexed => "Indexed",
+            };
+            crediting.contains(&cred_str.to_string())
+        });
+    }
+
+    if let Some(ref buckets) = filter_bb_buckets {
+        policies.retain(|p| {
+            let bucket_str = match p.benefit_base_bucket {
+                actuarial_system::policy::BenefitBaseBucket::Under50k => "[0, 50000)",
+                actuarial_system::policy::BenefitBaseBucket::From50kTo100k => "[50000, 100000)",
+                actuarial_system::policy::BenefitBaseBucket::From100kTo200k => "[100000, 200000)",
+                actuarial_system::policy::BenefitBaseBucket::From200kTo500k => "[200000, 500000)",
+                actuarial_system::policy::BenefitBaseBucket::Over500k => "[500000, Inf)",
+            };
+            buckets.contains(&bucket_str.to_string())
+        });
+    }
+
+    if !json_output && policies.len() < initial_count {
+        println!("Filtered to {} policies (from {})", policies.len(), initial_count);
+    }
 
     if !json_output {
         println!("Loaded {} policies in {:?}", policies.len(), start.elapsed());

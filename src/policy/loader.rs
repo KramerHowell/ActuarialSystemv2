@@ -1,9 +1,16 @@
 //! Load policies from pricing_inforce.csv
+//!
+//! For Lambda deployment, the CSV data is embedded at compile time using include_str!
+//! This avoids needing to package the CSV file separately.
 
 use super::{Policy, QualStatus, Gender, CreditingStrategy, RollupType, BenefitBaseBucket};
 use csv::Reader;
 use std::error::Error;
 use std::path::Path;
+use std::io::Cursor;
+
+/// Embedded pricing_inforce.csv data for Lambda/serverless deployments
+const EMBEDDED_INFORCE_CSV: &str = include_str!("../../pricing_inforce.csv");
 
 /// Raw CSV row matching pricing_inforce.csv columns
 #[derive(Debug, serde::Deserialize)]
@@ -136,9 +143,14 @@ pub fn load_policies_from_reader<R: std::io::Read>(reader: R) -> Result<Vec<Poli
     Ok(policies)
 }
 
-/// Load policies from the default pricing_inforce.csv location
+/// Load policies from embedded data (for Lambda) or fall back to file
+///
+/// This function first tries to load from the embedded CSV data compiled into the binary,
+/// which is the primary method for Lambda deployments. If that fails (shouldn't happen),
+/// it falls back to loading from the file system for local development.
 pub fn load_default_inforce() -> Result<Vec<Policy>, Box<dyn Error>> {
-    load_policies("pricing_inforce.csv")
+    // Use embedded data - works in Lambda and locally
+    load_policies_from_reader(Cursor::new(EMBEDDED_INFORCE_CSV))
 }
 
 #[cfg(test)]
