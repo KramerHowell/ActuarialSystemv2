@@ -332,8 +332,15 @@ impl ProjectionEngine {
         };
 
         // Rollup rate (for display - actual rollup applied in update_benefit_base)
-        row.rollup_rate = if state.policy_year <= policy.sc_period as u32 && !state.income_activated {
-            self.assumptions.product.glwb.rollup_rate / 12.0
+        // Continuous monthly rollup: (1+bonus+rollup/12*PM)/(1+bonus+rollup/12*(PM-1))-1
+        // Using rollup/12 gives 10% per year (same as annual), just applied monthly
+        row.rollup_rate = if state.projection_month <= (policy.sc_period as u32) * 12 && !state.income_activated {
+            let bb_bonus = self.assumptions.product.glwb.bonus_rate;
+            let rollup_rate = self.assumptions.product.glwb.rollup_rate;
+            let monthly_rollup = rollup_rate / 12.0;
+            let pm = state.projection_month as f64;
+            let pm_prev = (state.projection_month - 1) as f64;
+            (1.0 + bb_bonus + monthly_rollup * pm) / (1.0 + bb_bonus + monthly_rollup * pm_prev) - 1.0
         } else {
             0.0
         };
@@ -431,10 +438,12 @@ impl ProjectionEngine {
         };
 
         // Excel column X: AV persistency = (1-H)*(1-S)*(1-L)*(1-rider_rate)
-        let av_persistency = (1.0 - row.final_mortality)
+        // Floor at 0 to handle cases where rider_charge * BB > AV (when AV is exhausting)
+        let av_persistency = ((1.0 - row.final_mortality)
             * (1.0 - row.final_lapse_rate)
             * (1.0 - row.non_systematic_pwd_rate)
-            * (1.0 - rider_rate);
+            * (1.0 - rider_rate))
+            .max(0.0);
 
         // Total decrement pool = Pre_dec_AV * (1 - AV_persistency)
         let decrement_pool = pre_dec_av * (1.0 - av_persistency);
@@ -611,15 +620,12 @@ impl ProjectionEngine {
 
         // Full monthly AV persistency per Excel column X formula
         // R: (1-mort)*(1-lapse)*(1-pwd)*(1-rider_rate)
-        //
-        // TODO(INCORRECT): This formula allows negative persistency when rider_charge * BB > BOP_AV
-        // (i.e., when AV is exhausting). This matches Excel but is conceptually wrong - we shouldn't
-        // be capturing hedge gains on rider charges that exceed the actual AV available. The correct
-        // fix would be to cap av_lost at BOP_AV, but we're replicating Excel exactly first.
-        let monthly_av_persistency = (1.0 - row.final_mortality)
+        // Floor at 0 to handle cases where rider_charge * BB > AV (when AV is exhausting)
+        let monthly_av_persistency = ((1.0 - row.final_mortality)
             * (1.0 - row.final_lapse_rate)
             * (1.0 - row.non_systematic_pwd_rate)
-            * (1.0 - rider_rate);
+            * (1.0 - rider_rate))
+            .max(0.0);
 
         let av_lost = state.bop_av * (1.0 - monthly_av_persistency);
         // Use lagged month_in_policy_year for appreciation (except month 1)
@@ -640,9 +646,8 @@ impl ProjectionEngine {
     }
 
     /// Update benefit base for next month
-    /// Excel formula: =P11*Y11*(1+IF(AND(D11=12,K11=0),1,0)*W11)
-    /// where Y11 = (1-H11)*(1-S11)*(1-L11) = BB persistency
-    /// Rollup only applies at month 12 when GLWB not activated
+    /// Continuous monthly rollup: BB *= (1+bonus+rollup/12*PM)/(1+bonus+rollup/12*(PM-1))
+    /// Using rollup/12 gives 10% per year (same as annual formula), just applied monthly
     fn update_benefit_base(&self, policy: &Policy, state: &mut ProjectionState, row: &CashflowRow) {
         // Calculate BB persistency for this month: (1-mort)*(1-lapse)*(1-pwd)
         let monthly_bb_persistency = (1.0 - row.final_mortality)
@@ -656,17 +661,17 @@ impl ProjectionEngine {
             // After income activation, BB is only reduced by persistency (mortality, lapse)
             // Systematic withdrawals come from AV, not BB
             // No rollup after income activation
-        } else if state.month_in_policy_year == 12 && state.policy_year <= policy.sc_period as u32 {
-            // Rollup at month 12 during SC period when GLWB not activated
-            // 10% simple interest on premium, applied multiplicatively to persisted BB
-            // Excel: W = (1+Bonus+0.1*MIN(10,PY))/(1+Bonus+0.1*MIN(10,PY-1))-1
-            // Note: Use benefit base bonus (30%) from GLWB features, NOT policy.bonus (premium bonus)
+        } else if state.projection_month <= (policy.sc_period as u32) * 12 {
+            // Continuous monthly rollup during SC period when GLWB not activated
+            // Formula: (1+bonus+rollup/12*PM)/(1+bonus+rollup/12*(PM-1))
+            // This gives the same 10% per year as the annual formula, applied monthly
             let bb_bonus = self.assumptions.product.glwb.bonus_rate;
             let rollup_rate = self.assumptions.product.glwb.rollup_rate;
-            let py = (state.policy_year as f64).min(10.0);
-            let py_prev = ((state.policy_year - 1) as f64).min(10.0);
-            let rollup_factor = (1.0 + bb_bonus + rollup_rate * py)
-                              / (1.0 + bb_bonus + rollup_rate * py_prev);
+            let monthly_rollup = rollup_rate / 12.0;
+            let pm = state.projection_month as f64;
+            let pm_prev = (state.projection_month - 1) as f64;
+            let rollup_factor = (1.0 + bb_bonus + monthly_rollup * pm)
+                              / (1.0 + bb_bonus + monthly_rollup * pm_prev);
             state.bop_benefit_base = state.bop_benefit_base * rollup_factor;
         }
     }

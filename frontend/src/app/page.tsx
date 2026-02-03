@@ -88,6 +88,12 @@ interface ProjectionConfig {
   inforceFixedPct: number;
   inforceBBBonus: number;
   rollupRate: number;
+  // PWD assumptions
+  freeWithdrawalPct: number;
+  pwdUtilYear1: number;
+  pwdUtilYear2: number;
+  pwdUtilYear3: number;
+  pwdUtilYear4Plus: number;
 }
 
 interface CedingCommission {
@@ -148,7 +154,7 @@ interface ProjectionResult {
 // Navigation items
 const navItems = [
   { name: "Dashboard" },
-  { name: "Scenarios" },
+  { name: "Assumptions" },
   { name: "Results" },
   { name: "Explorer" },
 ];
@@ -181,6 +187,12 @@ export default function Home() {
     inforceFixedPct: 25,      // 25% fixed, 75% indexed
     inforceBBBonus: 30,       // 30% BB bonus (BB = Premium × 1.3)
     rollupRate: 10,           // 10% annual rollup
+    // PWD assumptions
+    freeWithdrawalPct: 10,    // 10% free withdrawal (up from 5%)
+    pwdUtilYear1: 6.5,        // 6.5% utilization year 1 (was 10%, now 65% of that)
+    pwdUtilYear2: 13,         // 13% utilization year 2 (was 20%, now 65% of that)
+    pwdUtilYear3: 19.5,       // 19.5% utilization year 3 (was 30%, now 65% of that)
+    pwdUtilYear4Plus: 26,     // 26% utilization year 4+ (was 40%, now 65% of that)
   });
 
   const [result, setResult] = useState<ProjectionResult | null>(null);
@@ -245,6 +257,12 @@ export default function Home() {
           inforce_fixed_pct: config.inforceFixedPct / 100,
           inforce_bb_bonus: config.inforceBBBonus / 100,
           rollup_rate: config.rollupRate / 100,
+          // PWD assumptions
+          free_withdrawal_pct: config.freeWithdrawalPct / 100,
+          pwd_util_year1: config.pwdUtilYear1 / 100,
+          pwd_util_year2: config.pwdUtilYear2 / 100,
+          pwd_util_year3: config.pwdUtilYear3 / 100,
+          pwd_util_year4_plus: config.pwdUtilYear4Plus / 100,
         }),
       });
 
@@ -331,6 +349,12 @@ export default function Home() {
           inforce_fixed_pct: config.inforceFixedPct / 100,
           inforce_bb_bonus: config.inforceBBBonus / 100,
           rollup_rate: config.rollupRate / 100,
+          // PWD assumptions
+          free_withdrawal_pct: config.freeWithdrawalPct / 100,
+          pwd_util_year1: config.pwdUtilYear1 / 100,
+          pwd_util_year2: config.pwdUtilYear2 / 100,
+          pwd_util_year3: config.pwdUtilYear3 / 100,
+          pwd_util_year4_plus: config.pwdUtilYear4Plus / 100,
           // Policy filters
           min_glwb_start_year: explorerMinGlwbYear,
           min_issue_age: explorerMinIssueAge,
@@ -820,15 +844,165 @@ export default function Home() {
             </>
           )}
 
-          {/* Scenarios Tab */}
-          {activeTab === "Scenarios" && (
-            <div className="glass-card rounded-3xl p-6">
-              <h3 className="text-lg font-semibold mb-4 drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
-                Scenario Management
-              </h3>
-              <div className="text-center py-12 text-[--text-muted]">
-                <p>Scenario manager coming soon</p>
-                <p className="text-sm mt-2">Create and compare multiple projection scenarios</p>
+          {/* Assumptions Tab */}
+          {activeTab === "Assumptions" && (
+            <div className="space-y-6">
+              {/* PWD Assumptions Card */}
+              <div className="glass-card rounded-3xl p-6">
+                <h3 className="text-lg font-semibold mb-2 drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
+                  Partial Withdrawal Assumptions
+                </h3>
+                <p className="text-sm text-[--text-muted] mb-6 drop-shadow-[0_1px_4px_rgba(0,0,0,0.5)]">
+                  Non-systematic partial withdrawals before income activation
+                </p>
+
+                <div className="space-y-6">
+                  {/* Free Withdrawal Percentage */}
+                  <div>
+                    <label className="block text-sm text-[--text-muted] mb-1">
+                      Free Withdrawal % (Year 2+)
+                    </label>
+                    <NumberInput
+                      value={config.freeWithdrawalPct}
+                      onChange={(v) => setConfig({ ...config, freeWithdrawalPct: v })}
+                      min={0}
+                      max={25}
+                      step={0.5}
+                      decimals={1}
+                    />
+                    <p className="text-xs text-[--text-muted] mt-1">
+                      Base free withdrawal amount as % of AV (or RMD if greater for qualified)
+                    </p>
+                  </div>
+
+                  {/* Utilization Rates */}
+                  <div className="border-t border-[--border-color] pt-4">
+                    <p className="text-sm font-semibold text-[--text-muted] mb-4">
+                      Utilization of Free Amount by Policy Year
+                    </p>
+
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div>
+                        <label className="block text-sm text-[--text-muted] mb-1">
+                          Year 1 (%)
+                        </label>
+                        <NumberInput
+                          value={config.pwdUtilYear1}
+                          onChange={(v) => setConfig({ ...config, pwdUtilYear1: v })}
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          decimals={1}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm text-[--text-muted] mb-1">
+                          Year 2 (%)
+                        </label>
+                        <NumberInput
+                          value={config.pwdUtilYear2}
+                          onChange={(v) => setConfig({ ...config, pwdUtilYear2: v })}
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          decimals={1}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm text-[--text-muted] mb-1">
+                          Year 3 (%)
+                        </label>
+                        <NumberInput
+                          value={config.pwdUtilYear3}
+                          onChange={(v) => setConfig({ ...config, pwdUtilYear3: v })}
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          decimals={1}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm text-[--text-muted] mb-1">
+                          Year 4+ (%)
+                        </label>
+                        <NumberInput
+                          value={config.pwdUtilYear4Plus}
+                          onChange={(v) => setConfig({ ...config, pwdUtilYear4Plus: v })}
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          decimals={1}
+                        />
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-[--text-muted] mt-3">
+                      % of free amount actually withdrawn each year (applies to RMD for qualified in year 1)
+                    </p>
+                  </div>
+
+                  {/* Summary Preview */}
+                  <div className="bg-gradient-to-r from-[--accent]/10 to-transparent rounded-lg p-4 border border-[--accent]/20">
+                    <p className="text-sm font-semibold text-[--accent] mb-2">Annual PWD Rates (Non-Qual)</p>
+                    <div className="grid grid-cols-4 gap-2 text-xs">
+                      <div className="text-center">
+                        <p className="text-[--text-muted]">Year 1</p>
+                        <p className="font-bold">{(config.freeWithdrawalPct * config.pwdUtilYear1 / 100).toFixed(2)}%</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-[--text-muted]">Year 2</p>
+                        <p className="font-bold">{(config.freeWithdrawalPct * config.pwdUtilYear2 / 100).toFixed(2)}%</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-[--text-muted]">Year 3</p>
+                        <p className="font-bold">{(config.freeWithdrawalPct * config.pwdUtilYear3 / 100).toFixed(2)}%</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-[--text-muted]">Year 4+</p>
+                        <p className="font-bold">{(config.freeWithdrawalPct * config.pwdUtilYear4Plus / 100).toFixed(2)}%</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-[--text-muted] mt-2">
+                      = Free % × Utilization % (qualified policies use MAX of free % and RMD rate)
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Other Product Features (read-only summary) */}
+              <div className="glass-card rounded-3xl p-6">
+                <h3 className="text-lg font-semibold mb-4 drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
+                  Other Product Features
+                </h3>
+                <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[--text-muted]">Surrender Charge Period</p>
+                    <p className="font-semibold">10 years</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[--text-muted]">GLWB Rollup Rate</p>
+                    <p className="font-semibold">{config.rollupRate}% simple</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[--text-muted]">BB Bonus</p>
+                    <p className="font-semibold">{config.inforceBBBonus}%</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[--text-muted]">Pre-Activation Rider Charge</p>
+                    <p className="font-semibold">0.50%</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[--text-muted]">Post-Activation Rider Charge</p>
+                    <p className="font-semibold">1.50%</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[--text-muted]">RMD Start Age</p>
+                    <p className="font-semibold">73</p>
+                  </div>
+                </div>
               </div>
             </div>
           )}

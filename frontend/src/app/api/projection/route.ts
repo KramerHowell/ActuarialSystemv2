@@ -22,6 +22,12 @@ interface ProjectionRequest {
   inforce_nonqual_mult?: number;
   inforce_bb_bonus?: number;
   rollup_rate?: number;
+  // PWD assumptions
+  free_withdrawal_pct?: number;
+  pwd_util_year1?: number;
+  pwd_util_year2?: number;
+  pwd_util_year3?: number;
+  pwd_util_year4_plus?: number;
   // Policy filters
   min_glwb_start_year?: number;
   min_issue_age?: number;
@@ -123,6 +129,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const inforceBBBonus = body.inforce_bb_bonus ?? 0.30;
     const rollupRate = body.rollup_rate ?? 0.10;
 
+    // PWD assumptions
+    const freeWithdrawalPct = body.free_withdrawal_pct ?? 0.10;  // 10% default
+    const pwdUtilYear1 = body.pwd_util_year1 ?? 0.065;          // 6.5% default
+    const pwdUtilYear2 = body.pwd_util_year2 ?? 0.13;           // 13% default
+    const pwdUtilYear3 = body.pwd_util_year3 ?? 0.195;          // 19.5% default
+    const pwdUtilYear4Plus = body.pwd_util_year4_plus ?? 0.26;  // 26% default
+
     // Policy filters
     const minGlwbStartYear = body.min_glwb_start_year;
     const minIssueAge = body.min_issue_age;
@@ -156,6 +169,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         inforce_nonqual_mult: inforceNonqualMult,
         inforce_bb_bonus: inforceBBBonus,
         rollup_rate: rollupRate,
+        // PWD assumptions
+        free_withdrawal_pct: freeWithdrawalPct,
+        pwd_util_year1: pwdUtilYear1,
+        pwd_util_year2: pwdUtilYear2,
+        pwd_util_year3: pwdUtilYear3,
+        pwd_util_year4_plus: pwdUtilYear4Plus,
       };
 
       // Add optional parameters

@@ -9,7 +9,7 @@ pub mod loader;
 pub use mortality::{MortalityTable, MonthlyConversion};
 pub use lapse::{LapseModel, calculate_itm_ness};
 pub use product::{SurrenderChargeSchedule, PayoutFactors, ProductFeatures};
-pub use pwd::{PwdAssumptions, RmdTable};
+pub use pwd::{PwdAssumptions, RmdTable, FreeWithdrawalUtilization};
 pub use loader::LoadedAssumptions;
 
 use std::path::Path;

@@ -84,6 +84,27 @@ pub struct ProjectionRequest {
     #[serde(default = "default_rollup_rate")]
     pub rollup_rate: f64,
 
+    // PWD assumptions
+    /// Free withdrawal percentage (default: 10%)
+    #[serde(default = "default_free_withdrawal_pct")]
+    pub free_withdrawal_pct: f64,
+
+    /// PWD utilization year 1 (default: 6.5%)
+    #[serde(default = "default_pwd_util_year1")]
+    pub pwd_util_year1: f64,
+
+    /// PWD utilization year 2 (default: 13%)
+    #[serde(default = "default_pwd_util_year2")]
+    pub pwd_util_year2: f64,
+
+    /// PWD utilization year 3 (default: 19.5%)
+    #[serde(default = "default_pwd_util_year3")]
+    pub pwd_util_year3: f64,
+
+    /// PWD utilization year 4+ (default: 26%)
+    #[serde(default = "default_pwd_util_year4_plus")]
+    pub pwd_util_year4_plus: f64,
+
     // Policy filters
     #[serde(default)]
     pub min_glwb_start_year: Option<u32>,
@@ -120,6 +141,11 @@ fn default_fixed_pct() -> f64 { 0.25 }
 fn default_one() -> f64 { 1.0 }
 fn default_bb_bonus() -> f64 { 0.30 }
 fn default_rollup_rate() -> f64 { 0.10 }
+fn default_free_withdrawal_pct() -> f64 { 0.10 }    // 10%
+fn default_pwd_util_year1() -> f64 { 0.065 }        // 6.5%
+fn default_pwd_util_year2() -> f64 { 0.13 }         // 13%
+fn default_pwd_util_year3() -> f64 { 0.195 }        // 19.5%
+fn default_pwd_util_year4_plus() -> f64 { 0.26 }    // 26%
 
 /// Output from the projection
 #[derive(Debug, Serialize)]
@@ -349,10 +375,19 @@ async fn handler(event: Request) -> Result<Response<Body>, Error> {
 
     let policy_count = policies.len();
 
-    // Load assumptions and apply rollup rate override
+    // Load assumptions and apply overrides
     let mut assumptions = Assumptions::default_pricing();
     assumptions.product.glwb.rollup_rate = request.rollup_rate;
     assumptions.product.glwb.bonus_rate = request.inforce_bb_bonus;
+
+    // Override PWD assumptions
+    assumptions.product.base.free_withdrawal_pct = request.free_withdrawal_pct;
+    assumptions.pwd.free_utilization = actuarial_system::assumptions::FreeWithdrawalUtilization::from_rates(
+        request.pwd_util_year1,
+        request.pwd_util_year2,
+        request.pwd_util_year3,
+        request.pwd_util_year4_plus,
+    );
 
     // Projection config with dynamic hedge params
     let config = ProjectionConfig {

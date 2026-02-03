@@ -136,6 +136,14 @@ impl FreeWithdrawalUtilization {
         }
     }
 
+    /// Create from individual year rates
+    /// year4_plus is used for year 4 and all subsequent years
+    pub fn from_rates(year1: f64, year2: f64, year3: f64, year4_plus: f64) -> Self {
+        Self {
+            rates: vec![year1, year2, year3, year4_plus],
+        }
+    }
+
     /// Get utilization rate for policy year
     pub fn get_rate(&self, policy_year: u32) -> f64 {
         let idx = (policy_year as usize).saturating_sub(1);
@@ -173,7 +181,7 @@ impl PwdAssumptions {
     ///
     /// For qualified policies: MAX(base free %, RMD rate by age)
     /// For non-qualified policies: base free %
-    /// In policy year 1: always 0
+    /// In policy year 1: only RMD applies (no free partial withdrawals)
     ///
     /// # Arguments
     /// * `policy_year` - Current policy year
@@ -190,9 +198,12 @@ impl PwdAssumptions {
         qual_status: QualStatus,
         free_pct: f64,
     ) -> f64 {
-        // Excel: =IF(C11=1,0,IF($C$4="Q",MAX('Product features '!$C$8,XLOOKUP(E11,...RMD...)),'Product features '!$C$8))
+        // In policy year 1, only RMD applies (no free partial withdrawals)
         if policy_year == 1 {
-            return 0.0;
+            return match qual_status {
+                QualStatus::Q => self.rmd.get_rate(attained_age),
+                QualStatus::N => 0.0,
+            };
         }
 
         match qual_status {
@@ -317,9 +328,16 @@ mod tests {
         let pwd = PwdAssumptions::default();
         let free_pct = 0.05; // 5% free withdrawal from ProductFeatures
 
-        // Year 1, age 60, non-qualified, not activated - FPW% is 0 in year 1
+        // Year 1, age 60, non-qualified, not activated - FPW% is 0 in year 1 (no free, no RMD)
         let rate = pwd.annual_pwd_rate(1, 60, QualStatus::N, false, free_pct);
-        assert_eq!(rate, 0.0); // FPW% = 0 in year 1 per Excel
+        assert_eq!(rate, 0.0);
+
+        // Year 1, age 75, qualified - RMD rate at 75 = 0.0407
+        // Only RMD applies in year 1 for qualified
+        // Annual rate = 4.07% × 10% utilization = 0.407%
+        let rate_y1_q = pwd.annual_pwd_rate(1, 75, QualStatus::Q, false, free_pct);
+        let expected_y1_q = 0.0406504065 * 0.1;  // RMD(75) × year 1 utilization
+        assert!((rate_y1_q - expected_y1_q).abs() < 0.001);
 
         // Year 2, age 61, non-qualified - 5% free × 20% utilization = 1%
         let rate_y2 = pwd.annual_pwd_rate(2, 61, QualStatus::N, false, free_pct);
@@ -345,5 +363,30 @@ mod tests {
         let monthly = pwd.monthly_pwd_rate(4, 77, QualStatus::Q, false, free_pct);
         let expected_monthly = 1.0 - (1.0 - 0.02_f64).powf(1.0 / 12.0);
         assert!((monthly - expected_monthly).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_custom_utilization_rates() {
+        let pwd = PwdAssumptions {
+            rmd: RmdTable::default(),
+            free_utilization: FreeWithdrawalUtilization::from_rates(0.065, 0.13, 0.195, 0.26),
+        };
+        let free_pct = 0.10; // 10% free withdrawal
+
+        // Year 1, age 60, non-qualified - 0% (no free, no RMD below 73)
+        let rate_y1_nq = pwd.annual_pwd_rate(1, 60, QualStatus::N, false, free_pct);
+        assert_eq!(rate_y1_nq, 0.0);
+
+        // Year 2, non-qualified - 10% × 13% = 1.3%
+        let rate_y2 = pwd.annual_pwd_rate(2, 61, QualStatus::N, false, free_pct);
+        assert!((rate_y2 - 0.013).abs() < 0.001);
+
+        // Year 3, non-qualified - 10% × 19.5% = 1.95%
+        let rate_y3 = pwd.annual_pwd_rate(3, 62, QualStatus::N, false, free_pct);
+        assert!((rate_y3 - 0.0195).abs() < 0.001);
+
+        // Year 4+, non-qualified - 10% × 26% = 2.6%
+        let rate_y4 = pwd.annual_pwd_rate(4, 63, QualStatus::N, false, free_pct);
+        assert!((rate_y4 - 0.026).abs() < 0.001);
     }
 }
